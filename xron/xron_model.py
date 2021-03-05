@@ -45,7 +45,7 @@ class CRNN(nn.Module):
         directions = 2 if config.RNN['layer_type'] == "BidirectionalRNN" else 1
         fnn = self._make_fnn(config.FNN.copy(),
                              in_channels = config.RNN['hidden_size']*directions)
-        log_softmax = nn.LogSoftmax()
+        log_softmax = nn.LogSoftmax(dim = 2)
         self.net = nn.Sequential(*cnn,permute,*rnn,*fnn,log_softmax)
         self.ctc = nn.CTCLoss()
     
