@@ -3,17 +3,18 @@ Created on Thu Mar  4 19:27:19 2021
 
 @author: Haotian Teng
 """
-
+import os 
+import sys
+import torch
+import argparse
 import numpy as np
-from xron.xron_model import CRNN, CONFIG
-from xron.xron_input import Dataset, ToTensor
 from torchvision import transforms
 import torch.utils.data as data
 from torch.utils.data.dataloader import DataLoader
-import torch
-import os 
-import sys
-import argparse
+
+from xron.xron_model import CRNN, CONFIG
+from xron.xron_input import Dataset, ToTensor
+
 class Trainer(object):
     def __init__(self,
                  train_dataloader:DataLoader,
@@ -199,7 +200,7 @@ if __name__ == "__main__":
                         help="The .npy file contain the sequence.")
     parser.add_argument('--seq_len', required = True,
                         help="The .npy file contain the sueqnece length.")
-    parser.add_argument('--deivce', default = 'cuda',
+    parser.add_argument('--device', default = 'cuda',
                         help="The device used for training, can be cpu or cuda.")
     parser.add_argument('--lr', default = 4e-3, type = float,
                         help="Initial learning rate.")
