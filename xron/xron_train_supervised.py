@@ -184,6 +184,8 @@ def main(args):
     config = CONFIG()
     net = CRNN(config)
     t = Trainer(loader,net,device = DEVICE)
+    if args.retrain:
+        t.load(args.model_f)
     lr = args.lr
     epoches = args.epoches
     optimizer = torch.optim.Adam(net.parameters(),lr = lr)
@@ -211,5 +213,7 @@ if __name__ == "__main__":
                         help = "The number of epoches to train.")
     parser.add_argument('--report', default = 10, type = int,
                         help = "The interval of training rounds to report.")
+    parser.add_argument('--load', dest='retrain', action='store_true',
+                        help='Load existed model.')
     args = parser.parse_args(sys.argv[1:])
     main(args)
