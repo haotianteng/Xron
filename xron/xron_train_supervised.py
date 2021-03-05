@@ -12,7 +12,8 @@ import torch.utils.data as data
 from torch.utils.data.dataloader import DataLoader
 import torch
 import os 
-
+import sys
+import argparse
 class Trainer(object):
     def __init__(self,
                  train_dataloader:DataLoader,
@@ -168,22 +169,43 @@ class DeviceDataLoader():
         else:
             return torch.device('cpu')
 
-
-if __name__ == "__main__":
-    chunks = np.load("/home/heavens/twilight_data1/S10_DNA/20170322_c4_watermanag_S10/bonito_output/ctc_data/chunks.npy")
-    reference = np.load("/home/heavens/twilight_data1/S10_DNA/20170322_c4_watermanag_S10/bonito_output/ctc_data/references.npy")
-    ref_len = np.load("/home/heavens/twilight_data1/S10_DNA/20170322_c4_watermanag_S10/bonito_output/ctc_data/reference_lengths.npy")
-    model_f = "/home/heavens/twilight_data1/S10_DNA/20170322_c4_watermanag_S10/xron_output/models"
+def main(args):
+    chunks = np.load(args.chunks)
+    reference = np.load(args.seq)
+    ref_len = np.load(args.seq_len)
+    model_f = args.model_folder
     dataset = Dataset(chunks,seq = reference,seq_len = ref_len,transform = transforms.Compose([ToTensor()]))
     loader = data.DataLoader(dataset,batch_size = 200,shuffle = True, num_workers = 4)
-    DEVICE = "cuda"
+    DEVICE = args.device
     loader = DeviceDataLoader(loader)
     config = CONFIG()
     net = CRNN(config)
-    t = Trainer(loader,net)
-    lr = 1e-5
-    epoches = 10
-    global_step = 0
+    t = Trainer(loader,net,device = DEVICE)
+    lr = args.lr
+    epoches = args.epoches
     optimizer = torch.optim.Adam(net.parameters(),lr = lr)
-    COUNT_CYCLE = 10
+    COUNT_CYCLE = args.report
     t.train(epoches,optimizer,COUNT_CYCLE,model_f)
+    
+    
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description='Training model with tfrecord file')
+    parser.add_argument('-i', '--chunks', required = True,
+                        help = "The .npy file contain chunks.")
+    parser.add_argument('-o', '--model_folder', required = True,
+                        help = "The folder to save folder at.")
+    parser.add_argument('--seq', required = True,
+                        help="The .npy file contain the sequence.")
+    parser.add_argument('--seq_len', required = True,
+                        help="The .npy file contain the sueqnece length.")
+    parser.add_argument('--deivce', default = 'cuda',
+                        help="The device used for training, can be cpu or cuda.")
+    parser.add_argument('--lr', default = 4e-3, type = float,
+                        help="Initial learning rate.")
+    parser.add_argument('--epoches', default = 10, type = int,
+                        help = "The number of epoches to train.")
+    parser.add_argument('--report', default = 10, type = int,
+                        help = "The interval of training rounds to report.")
+    args = parser.parse_args(sys.argv[1:])
+    main(args)
