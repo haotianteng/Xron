@@ -185,7 +185,7 @@ def main(args):
     net = CRNN(config)
     t = Trainer(loader,net,device = DEVICE)
     if args.retrain:
-        t.load(args.model_f)
+        t.load(args.model_folder)
     lr = args.lr
     epoches = args.epoches
     optimizer = torch.optim.Adam(net.parameters(),lr = lr)
