@@ -175,7 +175,7 @@ def main(args):
     chunks = np.load(args.chunks)
     reference = np.load(args.seq)
     ref_len = np.load(args.seq_len)
-    print("Constructing and loading models.")
+    print("Construct and load the model.")
     model_f = args.model_folder
     dataset = Dataset(chunks,seq = reference,seq_len = ref_len,transform = transforms.Compose([ToTensor()]))
     loader = data.DataLoader(dataset,batch_size = 200,shuffle = True, num_workers = 4)
@@ -188,7 +188,7 @@ def main(args):
     epoches = args.epoches
     optimizer = torch.optim.Adam(net.parameters(),lr = lr)
     COUNT_CYCLE = args.report
-    print("Begin training the models.")
+    print("Begin training the model.")
     t.train(epoches,optimizer,COUNT_CYCLE,model_f)
     
     
