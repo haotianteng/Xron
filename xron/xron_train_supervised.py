@@ -94,14 +94,14 @@ class Trainer(object):
         self.save_folder = save_folder
         for epoch_i in range(epoches):
             for i_batch, batch in enumerate(self.train_ds):
-                if i_batch+1%save_cycle==0:
+                if (i_batch+1)%save_cycle==0:
                     calculate_error = True
                 else:
                     calculate_error = False
                 loss,error = self.train_step(batch,get_error = calculate_error)
                 optimizer.zero_grad()
                 loss.backward()
-                if i_batch+1%save_cycle==0:
+                if (i_batch+1)%save_cycle==0:
                     self.save()
                     eval_i,valid_batch = next(enumerate(self.eval_ds))
                     valid_error = self.valid_step(valid_batch)
