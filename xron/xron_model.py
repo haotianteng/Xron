@@ -23,7 +23,7 @@ class RNN_CONFIG(CNN_CONFIG):
     RNN = {'layer_type':'BidirectionalRNN','hidden_size':64,'cell_type':'LSTM','num_layers':3}
     FNN = {'N_Layer':2,
            'Layers':[{'out_features':32,'bias':True,'activation':'ReLU'},
-                     {'out_features':6,'bias':False,'activation':None}]}
+                     {'out_features':5,'bias':False,'activation':None}]}
     
 class CONFIG(RNN_CONFIG):
     pass
@@ -89,7 +89,8 @@ class CRNN(nn.Module):
                   seqs:Tensor,
                   seqs_len:Tensor,
                   alphabet:str = "NACGT",
-                  beam_size:int = 5):
+                  beam_size:int = 5,
+                  beam_cut_threshold:float = 0.05):
         """
         Calculate the ctc decoding error between the true label.
 
@@ -108,6 +109,10 @@ class CRNN(nn.Module):
         beam_size : int, optional
             The beam size, if it's 1, a faster but less-accurate vaterbi
             decoder will be used. The default is 5.
+        beam_cut_threshold: float, optional
+            The cut threshold of beam search, the higher it is, more search
+            will done, too large the value could run out of search space of 
+            beam search. The default is 0.05
 
         Returns
         -------
@@ -115,19 +120,19 @@ class CRNN(nn.Module):
 
         """
         if beam_size <=1:
-            decoder = viterbi_search
+            decoder = partial(viterbi_search, alphabet = alphabet)
         else:
-            decoder = partial(beam_search, beam_size = beam_size)
-        posteriors = output.numpy()
+            decoder = partial(beam_search, beam_size = beam_size, alphabet = alphabet)
+        posteriors = posteriors.cpu().detach().numpy()
         batch_size = posteriors.shape[0]
-        seqs = seqs.numpy().copy()
-        seqs_len = seqs_len.numpy().copy().flatten()
+        seqs = seqs.cpu().detach().numpy()
+        seqs_len = seqs_len.cpu().detach().numpy().flatten()
         errors = []
         ab = alphabet[1:]
         for i in np.arange(batch_size):
-            pred = decoder(posteriors[:,i,:])
+            pred = decoder(np.exp(posteriors[:,i,:]))[0]
             seq_len = seqs_len[i]
-            error = editdistance(pred,"".join([ab[x] for x in seqs[i][:seq_len]]))
+            error = editdistance.eval(pred,"".join([ab[x-1] for x in seqs[i][:seq_len]]))
             errors.append(error/seq_len)
         return np.array(errors).mean()
 

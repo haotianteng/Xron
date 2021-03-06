@@ -5,9 +5,11 @@ Created on Thu Mar  4 19:27:19 2021
 """
 import os 
 import sys
+import toml
 import torch
 import argparse
 import numpy as np
+from typing import Dict
 from torchvision import transforms
 import torch.utils.data as data
 from torch.utils.data.dataloader import DataLoader
@@ -19,9 +21,9 @@ class Trainer(object):
     def __init__(self,
                  train_dataloader:DataLoader,
                  net:CRNN,
-                 keep_record:int = 5,
-                 eval_dataloader:DataLoader = None,
-                 device:str = None):
+                 config:CONFIG,
+                 device:str = None,
+                 eval_dataloader:DataLoader = None):
         """
 
         Parameters
@@ -30,14 +32,15 @@ class Trainer(object):
             Training dataloader.
         net : CRNN
             A CRNN network instance.
-        keep_record : int, optional
-            The latest n checkpoints to save for each training routine.. The default is 5.
+        device: str
+            The device used to train the model, can be 'cpu' or 'cuda'.
+            Default is None, use cuda device if it's available.
+        config: CONFIG
+            A CONFIG class contains training configurations. Need to contain
+            at least these parameters: keep_record, device and grad_norm.
         eval_dataloader : DataLoader, optional
             Evaluation dataloader, if None training dataloader will be used.
             The default is None.
-        device : str, optional
-            The name of the device, can be one of the following:"cpu", "cuda". 
-            If None, cuda will be used if available. The default is None.
 
         Returns
         -------
@@ -53,8 +56,10 @@ class Trainer(object):
         self.net = net
         self.net.to(self.device)
         self.global_step = 0
-        self.keep_record = keep_record
         self.save_list = []
+        self.keep_record = config.TRAIN['keep_record']
+        self.grad_norm = config.TRAIN['grad_norm']
+        self.config = config
     
     def _get_device(self,device):
         if device is None:
@@ -67,6 +72,11 @@ class Trainer(object):
         
     def save(self):
         ckpt_file = os.path.join(self.save_folder,'checkpoint')
+        config_file = os.path.join(self.save_folder,'config.toml')
+        config_modules = [x for x in self.config.__dir__() if not x .startswith('_')]
+        config_dict = {x:getattr(self.config,x) for x in config_modules}
+        with open(config_file,'w+') as f:
+            toml.dumps(config_dict,f)
         current_ckpt = 'ckpt-'+str(self.global_step)
         model_file = os.path.join(self.save_folder,current_ckpt)
         self.save_list.append(current_ckpt)
@@ -84,6 +94,7 @@ class Trainer(object):
     def load(self,save_folder):
         self.save_folder = save_folder
         ckpt_file = os.path.join(self.save_folder,'checkpoint')
+        config_file = os.path.join(self.save_folder,'config.toml')
         with open(ckpt_file,'r') as f:
             latest_ckpt = f.readline().strip().split(':')[1]
             self.global_step = int(latest_ckpt.split('-')[1])
@@ -107,6 +118,8 @@ class Trainer(object):
                     valid_error = self.valid_step(valid_batch)
                     print(valid_error)
                     print("Epoch %d Batch %d, loss %f, error %f, valid_error %f"%(epoch_i, i_batch, loss,np.mean(error),np.mean(valid_error)))
+                torch.nn.utils.clip_grad_norm_(self.net.parameters, 
+                                               max_norm=self.grad_norm)
                 optimizer.step()
                 self.global_step +=1
                 
@@ -117,7 +130,11 @@ class Trainer(object):
         seq = batch['seq']
         seq_len = batch['seq_len'].view(-1)
         error = None
-        error = net.ctc_error(out,seq,seq_len)
+        error = net.ctc_error(out,
+                              seq,
+                              seq_len,
+                              beam_size = self.config.CTC['beam_size'],
+                              beam_cut_threshold = self.config.CTC['beam_cut_threshold'])
         return error
 
     def train_step(self,batch,get_error = False):
@@ -132,7 +149,11 @@ class Trainer(object):
         loss = net.ctc_loss(out,out_len,seq,seq_len)
         error = None
         if get_error:
-            error = net.ctc_error(out,seq,seq_len)
+            error = net.ctc_error(out,
+                                  seq,
+                                  seq_len,
+                                  beam_size = self.config.CTC['beam_size'],
+                                  beam_cut_threshold = self.config.CTC['beam_cut_threshold'])
         return loss,error
 
 class DeviceDataLoader():
@@ -170,7 +191,27 @@ class DeviceDataLoader():
         else:
             return torch.device('cpu')
 
+def load_config(config_file):
+    class CONFIG(object):
+        pass
+    with open(config_file,'r') as f:
+        config_dict = toml.load(f)
+    config = CONFIG()
+    for k,v in config_dict.items():
+        setattr(config,k,v)
+    return config
+
 def main(args):
+    class TRAIN_CONFIG(CONFIG):
+        CTC = {"beam_size":1,
+               "beam_cut_threshold":0.05,
+               "alphabet": "ACGT"}
+        TRAIN = {"inital_learning_rate":args.lr,
+                 "batch_size":args.batch_size,
+                 "grad_norm":2,
+                 "keep_record":5}
+        
+    config = TRAIN_CONFIG()
     print("Read chunks and sequence.")
     chunks = np.load(args.chunks)
     reference = np.load(args.seq)
@@ -181,11 +222,14 @@ def main(args):
     loader = data.DataLoader(dataset,batch_size = 200,shuffle = True, num_workers = 4)
     DEVICE = args.device
     loader = DeviceDataLoader(loader)
-    config = CONFIG()
-    net = CRNN(config)
-    t = Trainer(loader,net,device = DEVICE)
     if args.retrain:
-        t.load(args.model_folder)
+        t.load(model_f)
+        config_old = load_config(os.path.join(model_f,"config.toml"))
+        config_old.TRAIN = config.TRAIN #Overwrite training config.
+        config = config_old
+    net = CRNN(config)
+    print(config.CTC)
+    t = Trainer(loader,net,config)
     lr = args.lr
     epoches = args.epoches
     optimizer = torch.optim.Adam(net.parameters(),lr = lr)
@@ -209,6 +253,8 @@ if __name__ == "__main__":
                         help="The device used for training, can be cpu or cuda.")
     parser.add_argument('--lr', default = 4e-3, type = float,
                         help="Initial learning rate.")
+    parser.add_argument('--batch_size', default = 200, type = int,
+                        help="Training batch size.")
     parser.add_argument('--epoches', default = 10, type = int,
                         help = "The number of epoches to train.")
     parser.add_argument('--report', default = 10, type = int,
