@@ -9,6 +9,7 @@ import numpy as np
 import torch
 import xron.nn
 from typing import Dict
+from copy import deepcopy
 from functools import partial
 from fast_ctc_decode import beam_search, viterbi_search
 import editdistance
@@ -21,11 +22,13 @@ class CNN_CONFIG(object):
 
 class RNN_CONFIG(CNN_CONFIG):
     RNN = {'layer_type':'BidirectionalRNN','hidden_size':64,'cell_type':'LSTM','num_layers':3}
+
+class FNN_CONFIG(RNN_CONFIG):
     FNN = {'N_Layer':2,
            'Layers':[{'out_features':32,'bias':True,'activation':'ReLU'},
-                     {'out_features':5,'bias':False,'activation':None}]}
+                     {'out_features':5,'bias':False,'activation':'Linear'}]}
     
-class CONFIG(RNN_CONFIG):
+class CONFIG(FNN_CONFIG):
     pass
 
 module_dict = {'Res1d':xron.nn.Res1d,
@@ -38,16 +41,27 @@ module_dict = {'Res1d':xron.nn.Res1d,
 class CRNN(nn.Module):
     def __init__(self,config:Dict):
         super().__init__()
-        cnn = self._make_cnn(config.CNN.copy())
+        self.config = self._copy_config(config)
+        config = self._copy_config(self.config)
+        cnn = self._make_cnn(config.CNN)
         permute = xron.nn.Permute([2,0,1]) #[N,C,L] -> [L,N,C]
-        rnn = self._make_rnn(config.RNN.copy(),
+        rnn = self._make_rnn(config.RNN,
                              in_channels = config.CNN['Layers'][-1]['out_channels'])
-        directions = 2 if config.RNN['layer_type'] == "BidirectionalRNN" else 1
+        directions = 2 if self.config.RNN['layer_type'] == "BidirectionalRNN" else 1
         fnn = self._make_fnn(config.FNN.copy(),
                              in_channels = config.RNN['hidden_size']*directions)
         log_softmax = nn.LogSoftmax(dim = 2)
         self.net = nn.Sequential(*cnn,permute,*rnn,*fnn,log_softmax)
         self.ctc = nn.CTCLoss()
+    
+    def _copy_config(self,config):
+        class CONFIG:
+            pass
+        config_copy = CONFIG()
+        config_modules = [x for x in config.__dir__() if not x .startswith('_')][::-1]
+        for module in config_modules:
+            setattr(config_copy,module,deepcopy(getattr(config,module)))
+        return config_copy
     
     def _make_cnn(self,cnn_config,in_channels = 1):
         layers = []
@@ -69,7 +83,7 @@ class CRNN(nn.Module):
         for l in fnn_config['Layers']:
             activation = l.pop('activation')
             layers.append(nn.Linear(in_features = in_channels,**l))
-            if activation is not None:
+            if activation != 'Linear':
                 layers.append(module_dict[activation]())
             in_channels = l['out_features']
         return layers
@@ -124,7 +138,7 @@ class CRNN(nn.Module):
         else:
             decoder = partial(beam_search, beam_size = beam_size, alphabet = alphabet)
         posteriors = posteriors.cpu().detach().numpy()
-        batch_size = posteriors.shape[0]
+        batch_size = posteriors.shape[1]
         seqs = seqs.cpu().detach().numpy()
         seqs_len = seqs_len.cpu().detach().numpy().flatten()
         errors = []

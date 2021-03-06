@@ -72,11 +72,6 @@ class Trainer(object):
         
     def save(self):
         ckpt_file = os.path.join(self.save_folder,'checkpoint')
-        config_file = os.path.join(self.save_folder,'config.toml')
-        config_modules = [x for x in self.config.__dir__() if not x .startswith('_')]
-        config_dict = {x:getattr(self.config,x) for x in config_modules}
-        with open(config_file,'w+') as f:
-            toml.dumps(config_dict,f)
         current_ckpt = 'ckpt-'+str(self.global_step)
         model_file = os.path.join(self.save_folder,current_ckpt)
         self.save_list.append(current_ckpt)
@@ -91,6 +86,13 @@ class Trainer(object):
                 f.write("checkpoint file:" + path + '\n')
         torch.save(self.net.state_dict(),model_file)
     
+    def _save_config(self):
+        config_file = os.path.join(self.save_folder,'config.toml')
+        config_modules = [x for x in self.config.__dir__() if not x .startswith('_')][::-1]
+        config_dict = {x:getattr(self.config,x) for x in config_modules}
+        with open(config_file,'w+') as f:
+            toml.dump(config_dict,f)
+    
     def load(self,save_folder):
         self.save_folder = save_folder
         ckpt_file = os.path.join(self.save_folder,'checkpoint')
@@ -103,6 +105,7 @@ class Trainer(object):
         
     def train(self,epoches,optimizer,save_cycle,save_folder):
         self.save_folder = save_folder
+        self._save_config()
         for epoch_i in range(epoches):
             for i_batch, batch in enumerate(self.train_ds):
                 if (i_batch+1)%save_cycle==0:
@@ -116,9 +119,8 @@ class Trainer(object):
                     self.save()
                     eval_i,valid_batch = next(enumerate(self.eval_ds))
                     valid_error = self.valid_step(valid_batch)
-                    print(valid_error)
                     print("Epoch %d Batch %d, loss %f, error %f, valid_error %f"%(epoch_i, i_batch, loss,np.mean(error),np.mean(valid_error)))
-                torch.nn.utils.clip_grad_norm_(self.net.parameters, 
+                torch.nn.utils.clip_grad_norm_(self.net.parameters(), 
                                                max_norm=self.grad_norm)
                 optimizer.step()
                 self.global_step +=1
@@ -133,6 +135,7 @@ class Trainer(object):
         error = net.ctc_error(out,
                               seq,
                               seq_len,
+                              alphabet = 'N' + self.config.CTC['alphabeta'],
                               beam_size = self.config.CTC['beam_size'],
                               beam_cut_threshold = self.config.CTC['beam_cut_threshold'])
         return error
@@ -140,9 +143,8 @@ class Trainer(object):
     def train_step(self,batch,get_error = False):
         net = self.net
         signal_batch = batch['signal']
-        batch_size = signal_batch.shape[0]
         out = net.forward(signal_batch)
-        out_len = np.array([out.shape[1]]*batch_size,dtype = np.int16)
+        out_len = np.array([out.shape[0]]*out.shape[1],dtype = np.int16)
         out_len = torch.from_numpy(out_len).to(self.device)
         seq = batch['seq']
         seq_len = batch['seq_len'].view(-1)
@@ -152,6 +154,7 @@ class Trainer(object):
             error = net.ctc_error(out,
                                   seq,
                                   seq_len,
+                                  alphabet = 'N' + self.config.CTC['alphabeta'],
                                   beam_size = self.config.CTC['beam_size'],
                                   beam_cut_threshold = self.config.CTC['beam_cut_threshold'])
         return loss,error
@@ -202,10 +205,11 @@ def load_config(config_file):
     return config
 
 def main(args):
-    class TRAIN_CONFIG(CONFIG):
-        CTC = {"beam_size":1,
+    class CTC_CONFIG(CONFIG):
+        CTC = {"beam_size":5,
                "beam_cut_threshold":0.05,
-               "alphabet": "ACGT"}
+               "alphabeta": "ACGT"}
+    class TRAIN_CONFIG(CTC_CONFIG):
         TRAIN = {"inital_learning_rate":args.lr,
                  "batch_size":args.batch_size,
                  "grad_norm":2,
@@ -223,13 +227,13 @@ def main(args):
     DEVICE = args.device
     loader = DeviceDataLoader(loader)
     if args.retrain:
-        t.load(model_f)
         config_old = load_config(os.path.join(model_f,"config.toml"))
         config_old.TRAIN = config.TRAIN #Overwrite training config.
         config = config_old
     net = CRNN(config)
-    print(config.CTC)
     t = Trainer(loader,net,config)
+    if args.retrain:
+        t.load(model_f)
     lr = args.lr
     epoches = args.epoches
     optimizer = torch.optim.Adam(net.parameters(),lr = lr)
