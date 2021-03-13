@@ -53,16 +53,24 @@ class VAETrainer(Trainer):
         self.decoder = decoder
         params = [encoder.parameters(),decoder.parameters()]
         self.parameters = chain(*params)
-        
+        self.global_step = 0
+        self.awake = False
+        self.wake_sleep_cycle = config.TRAIN['Sleep_Wake_Cycle']
     def train(self,epoches,optimizer,save_cycle,save_folder):
         self.save_folder = save_folder
         self._save_config()
         for epoch_i in range(epoches):
             for i_batch, batch in enumerate(self.train_ds):
+                if (self.global_step+1)%self.wake_sleep_cycle == 0:
+                    self.awake = not self.awake
+                    for param in self.encoder.parameters():
+                        param.requires_grad = self.awake
+                    for param in self.decoder.parameters():
+                        param.requires_grad = not self.awake
                 loss = self.train_step(batch)
                 optimizer.zero_grad()
                 loss.backward()
-                if (i_batch+1)%save_cycle==0:
+                if (self.global_step+1)%save_cycle==0:
                     self.save()
                     eval_i,valid_batch = next(enumerate(self.eval_ds))
                     valid_error,valid_perm = self.valid_step(valid_batch)
@@ -110,7 +118,8 @@ def main(args):
         TRAIN = {"inital_learning_rate":args.lr,
                  "batch_size":args.batch_size,
                  "grad_norm":2,
-                 "keep_record":5}
+                 "keep_record":5,
+                 "Sleep_Wake_Cycle":args.sleep_cycle}
         
     config = TRAIN_CONFIG()
     print("Read chunks and sequence.")
@@ -161,7 +170,11 @@ if __name__ == "__main__":
                         help = "The number of epoches to train.")
     parser.add_argument('--report', default = 10, type = int,
                         help = "The interval of training rounds to report.")
+    parser.add_argument('--sleep_cycle', default = 50, type = int,
+                        help = "The sleep wake cycle.")
     parser.add_argument('--load', dest='retrain', action='store_true',
                         help='Load existed model.')
     args = parser.parse_args(sys.argv[1:])
+    if not os.path.isdir(args.model_folder):
+        os.mkdir(args.model_folder)
     main(args)
