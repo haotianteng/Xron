@@ -1,6 +1,4 @@
 """
-Created on Thu Feb 18 22:26:40 2021
-
 @author: Haotian Teng
 """
 import torch
@@ -10,6 +8,7 @@ from typing import List
 
 
 Conv1dk1 = partial(nn.Conv1d,kernel_size = 1)
+RevConv1dk1 = partial(nn.ConvTranspose1d, kernel_size = 1)
 
 class Res1d(nn.Module):
     def __init__(self, 
@@ -19,10 +18,11 @@ class Res1d(nn.Module):
                  stride: int = 1,
                  activation: nn.Module = nn.SiLU,
                  batch_norm: nn.Module = nn.BatchNorm1d):
-        super(Res1d,self).__init__()
-        self.self_map = Conv1dk1(in_channels,
-                                     out_channels,
-                                     stride = stride)
+        super().__init__()
+        self.self_map = nn.Conv1d(in_channels,
+                                  out_channels,
+                                  stride = stride,
+                                  kernel_size = stride)
         
         self.conv1 = Conv1dk1(in_channels, out_channels,stride=1)
         self.bn1 = batch_norm(out_channels)
@@ -30,10 +30,8 @@ class Res1d(nn.Module):
                                out_channels, 
                                kernel_size = kernel_size,
                                stride = stride,
-                               padding = kernel_size//2)
+                               padding = (kernel_size-stride)//2)
         self.bn2 = batch_norm(out_channels)
-        self.conv3 = Conv1dk1(out_channels, out_channels,stride=1)
-        self.bn3 = batch_norm(out_channels)
         self.activation = activation(inplace = True)
         
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -45,8 +43,41 @@ class Res1d(nn.Module):
         out = self.conv2(out)
         out = self.bn2(out)
         out = self.activation(out)
-        out = self.conv3(out)
-        out = self.bn3(out)
+        out += x0
+        return out
+
+class RevRes1d(nn.Module):
+    def __init__(self, 
+                 in_channels: int, 
+                 out_channels: int, 
+                 kernel_size: int = 3, 
+                 stride: int = 1,
+                 activation: nn.Module = nn.SiLU,
+                 batch_norm: nn.Module = nn.BatchNorm1d):
+        super().__init__()
+        self.self_map = nn.ConvTranspose1d(in_channels,
+                                           out_channels,
+                                           kernel_size = stride,
+                                           stride = stride)
+        self.conv1 = Conv1dk1(in_channels, out_channels,stride=1)
+        self.bn1 = batch_norm(out_channels)
+        self.conv2 = nn.ConvTranspose1d(out_channels, 
+                                        out_channels, 
+                                        kernel_size = kernel_size,
+                                        stride = stride,
+                                        padding = (kernel_size-stride)//2)
+        self.bn2 = batch_norm(out_channels)
+        self.activation = activation(inplace = True)
+        
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x0 = self.self_map(x)
+        
+        out = self.conv1(x)
+        out = self.bn1(out)
+        out = self.activation(out)
+        out = self.conv2(out)
+        out = self.bn2(out)
+        out = self.activation(out)
         
         out += x0
         return out
