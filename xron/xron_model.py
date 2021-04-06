@@ -320,7 +320,7 @@ class REVCNN(nn.Module):
         fnn = self._make_fnn(config.FNN_DECODER.copy(),
                              in_channels = config.CNN_DECODER['Layers'][-1]['out_channels'])
         self.net = nn.Sequential(*cnn,permute,*fnn)
-        self.mse_loss = nn.MSELoss(reduction = 'mean')
+        self.mse_loss = nn.MSELoss(reduction = 'none')
         self.entropy_loss = nn.CrossEntropyLoss()
     
     def _copy_config(self,config):
