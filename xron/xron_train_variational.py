@@ -61,12 +61,12 @@ class VAETrainer(Trainer):
         self._save_config()
         for epoch_i in range(epoches):
             for i_batch, batch in enumerate(self.train_ds):
-                if (self.global_step+1)%self.wake_sleep_cycle == 0:
-                    self.awake = not self.awake
-                    for param in self.encoder.parameters():
-                        param.requires_grad = self.awake
-                    for param in self.decoder.parameters():
-                        param.requires_grad = not self.awake
+                # if (self.global_step+1)%self.wake_sleep_cycle == 0:
+                #     self.awake = not self.awake
+                #     for param in self.encoder.parameters():
+                #         param.requires_grad = self.awake
+                #     for param in self.decoder.parameters():
+                #         param.requires_grad = not self.awake
                 loss = self.train_step(batch)
                 optimizer.zero_grad()
                 loss.backward()
@@ -86,14 +86,14 @@ class VAETrainer(Trainer):
         decoder = self.decoder
         signal = batch['signal']
         logprob = encoder.forward(signal) #[L,N,C]
-        prob = torch.exp(logprob)
-        m = OHC(prob)
+        m = OHC(logits = logprob)
         sampling = m.sample().permute([1,2,0]) #[L,N,C]->[N,C,L]
         rc_signal = decoder.forward(sampling).permute([0,2,1]) #[N,L,C] -> [N,C,L]
         mse_loss = decoder.mse_loss(rc_signal,signal)
         entropy_loss = decoder.entropy_loss(logprob.permute([1,2,0]),sampling.max(dim = 1)[1])
-        return entropy_loss+mse_loss
-    
+        sample_logprob = torch.sum(logprob.permute([1,2,0])*rc_signal,axis = 1)
+        return entropy_loss+torch.mean(mse_loss*sample_logprob,(0,1,2),keepdim = False)
+                                       
     def valid_step(self,batch):
         net = self.encoder
         signal_batch = batch['signal']
@@ -119,6 +119,7 @@ def main(args):
                  "batch_size":args.batch_size,
                  "grad_norm":2,
                  "keep_record":5,
+                 "decay":args.decay,
                  "Sleep_Wake_Cycle":args.sleep_cycle}
         
     config = TRAIN_CONFIG()
@@ -174,6 +175,8 @@ if __name__ == "__main__":
                         help = "The sleep wake cycle.")
     parser.add_argument('--load', dest='retrain', action='store_true',
                         help='Load existed model.')
+    parser.add_argument('--decay', type = float, default = 0.99,
+                        help="The decay factor of the moving average.")
     args = parser.parse_args(sys.argv[1:])
     if not os.path.isdir(args.model_folder):
         os.mkdir(args.model_folder)
