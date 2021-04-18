@@ -61,13 +61,13 @@ class VAETrainer(Trainer):
         self._save_config()
         for epoch_i in range(epoches):
             for i_batch, batch in enumerate(self.train_ds):
-                # if (self.global_step+1)%self.wake_sleep_cycle == 0:
-                #     self.awake = not self.awake
-                #     for param in self.encoder.parameters():
-                #         param.requires_grad = self.awake
-                #     for param in self.decoder.parameters():
-                #         param.requires_grad = not self.awake
-                loss = self.train_step(batch)
+                if (self.global_step+1)%self.wake_sleep_cycle == 0:
+                    self.awake = not self.awake
+                    for param in self.encoder.parameters():
+                        param.requires_grad = self.awake
+                    for param in self.decoder.parameters():
+                        param.requires_grad = not self.awake
+                loss = self.train_step(batch,phase = self.awake)
                 optimizer.zero_grad()
                 loss.backward()
                 if (self.global_step+1)%save_cycle==0:
@@ -81,7 +81,7 @@ class VAETrainer(Trainer):
                 self.global_step +=1
     
         
-    def train_step(self,batch):
+    def train_step(self,batch,phase = 0):
         encoder = self.encoder
         decoder = self.decoder
         signal = batch['signal']
@@ -91,8 +91,13 @@ class VAETrainer(Trainer):
         rc_signal = decoder.forward(sampling).permute([0,2,1]) #[N,L,C] -> [N,C,L]
         mse_loss = decoder.mse_loss(rc_signal,signal)
         entropy_loss = decoder.entropy_loss(logprob.permute([1,2,0]),sampling.max(dim = 1)[1])
-        sample_logprob = torch.sum(logprob.permute([1,2,0])*rc_signal,axis = 1)
-        return entropy_loss+torch.mean(mse_loss*sample_logprob,(0,1,2),keepdim = False)
+        if phase == 0: #Phase 0 when we update the decoder
+            rc_loss = torch.mean(mse_loss)
+            return entropy_loss+rc_loss
+        else: #Phase 1 when we update the encoder.
+            sample_logprob = torch.sum(logprob.permute([1,2,0])*sampling,axis = (1,2))
+            rc_loss = torch.mean(torch.mean(mse_loss,axis = (1,2))*sample_logprob)
+            return entropy_loss+rc_loss
                                        
     def valid_step(self,batch):
         net = self.encoder

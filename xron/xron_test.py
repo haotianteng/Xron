@@ -93,6 +93,7 @@ if __name__ == "__main__":
         break
     rc_signal,prob,predictions,sampling = e.eval_once(batch)
     rc_signal = rc_signal.detach().cpu().numpy()
+    batch = batch.detach().cpu().numpy()
     prob = prob.detach().cpu().numpy()
     sampling = sampling.detach().cpu().numpy()
     norm_signal = (rc_signal - np.mean(rc_signal,axis = 2))/np.std(rc_signal,axis = 2)
@@ -101,9 +102,9 @@ if __name__ == "__main__":
     idx = np.random.randint(low = 0, high = config.EVALUATION['batch_size']-1)
     fig,axs = plt.subplots(nrows = 2,figsize = (20,20))
     axs[0].plot(norm_signal[idx,0,5:500],label = "Reconstruction")
-    axs[0].plot(batch['signal'][idx,0,5:500],label = "Original signal")
+    axs[0].plot(batch['signal'].cpu()[idx,0,5:500],label = "Original signal")
     for i in np.arange(prob.shape[2]):
-        axs[1].plot(prob[:,idx,i])
+        axs[1].plot(prob[:200,idx,i])
     axs[0].legend()
     fig.savefig(os.path.join(args.model_folder,'reconstruction.png'))
         
