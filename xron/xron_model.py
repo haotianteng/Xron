@@ -19,6 +19,7 @@ module_dict = {'Res1d':xron.nn.Res1d,
                'LSTM':nn.LSTM,
                'ReLU':nn.ReLU,
                'Sigmoid':nn.Sigmoid}
+PORE_MODEL_F = "template_median69pA.model"
 class CNN_CONFIG(object):
     CNN = {'N_Layer':3,
            'Layers': [{'layer_type':'Res1d','kernel_size':5,'stride':1,'out_channels':32},
@@ -48,7 +49,10 @@ class DECODER_CONFIG(CONFIG):
              }
     FNN_DECODER = {'N_Layer':1,
                    'Layers':[{'out_features':8,'bias':True,'activation':'ReLU'},
-                             {'out_features':1,'bias':False,'activation':'Linear'}]}
+                             {'out_features':1,'bias':True,'activation':'Linear'}]}
+
+class MM_CONFIG(CONFIG):
+    PORE_MODEL = {"PORE_MODEL":PORE_MODEL_F}
             
 class CRNN(nn.Module):
     def __init__(self,config:CONFIG):
@@ -352,6 +356,24 @@ class REVCNN(nn.Module):
         
     def forward(self,batch):
         return self.net(batch)
+
+class MM(nn.Module):
+    def __init__(self,config:MM_DECODER_CONFIG):
+        """
+        The statistical Markov generative pore model, 
+
+        Parameters
+        ----------
+        config : DECODER_CONFIG
+            A config contains the pore model.
+
+        Returns
+        -------
+        None.
+        """
+        super().__init__()
+        self.config = self._copy_config(config)
+        config = self._copy_config(self.config)
 
 if __name__ == "__main__":
     config = CONFIG()

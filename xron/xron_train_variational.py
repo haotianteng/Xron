@@ -56,7 +56,8 @@ class VAETrainer(Trainer):
         self.aligner = aligner
         params = [encoder.parameters(),decoder.parameters()]
         self.parameters = chain(*params)
-        self.decay = config.TRAIN["decay"]
+        self.train_config = config.TRAIN
+        self.decay = self.train_config["decay"]
         self.global_step = 0
         self.awake = False
         self.score_average = 0
@@ -70,6 +71,9 @@ class VAETrainer(Trainer):
         self.save_folder = save_folder
         self._save_config()
         records = self.records
+        preheat = self.train_config["preheat"]
+        e_decay = self.train_config["epsilon_decay"]
+        epsilon = self.train_config["epsilon"]
         for epoch_i in range(epoches):
             for i_batch, batch in enumerate(self.train_ds):
                 if (self.global_step+1)%self.wake_sleep_cycle == 0:
@@ -78,6 +82,10 @@ class VAETrainer(Trainer):
                         param.requires_grad = self.awake
                     for param in self.decoder.parameters():
                         param.requires_grad = not self.awake
+                if self.global_step < preheat:
+                    self.epsilon = 1
+                else:
+                    self.epsilon = max(1+(self.global_step - preheat)*e_decay,epsilon)
                 losses = self.train_step(batch,phase = self.awake)
                 loss = sum(losses)
                 optimizer.zero_grad()
@@ -88,8 +96,6 @@ class VAETrainer(Trainer):
                     valid_error,valid_perm = self.valid_step(valid_batch)
                     records['entropy_losses'].append(losses[0].detach().cpu().numpy()[()])
                     records['valid_alignment'].append(valid_error)
-                    print(losses)
-                    print(valid_error)
                     if self.awake:
                         print("Epoch %d Batch %d, entropy_loss %f, rc_loss %f, valid_error %f, perm:%s, alignment_loss %f"%(epoch_i, i_batch, losses[0], losses[1], valid_error, valid_perm, losses[2]))
                         records['alignment_score'].append(losses[2].detach().cpu().numpy()[()])
@@ -108,8 +114,12 @@ class VAETrainer(Trainer):
         decoder = self.decoder
         signal = batch['signal']
         logprob = encoder.forward(signal) #[L,N,C]
-        m = OHC(logits = logprob)
-        sampling = m.sample().permute([1,2,0]) #[L,N,C]->[N,C,L]
+        if np.random.rand()<self.epsilon:
+            m = OHC(logits = logprob)
+            sampling = m.sample().permute([1,2,0]) #[L,N,C]->[N,C,L]
+        else:
+            sampling = torch.argmax(logprob,dim = 2)
+            sampling = torch.nn.functional.one_hot(sampling,num_classes = logprob.shape[2]).permute([1,2,0]).float()
         rc_signal = decoder.forward(sampling).permute([0,2,1]) #[N,L,C] -> [N,C,L]
         mse_loss = decoder.mse_loss(rc_signal,signal)
         entropy_loss = decoder.entropy_loss(logprob.permute([1,2,0]),sampling.max(dim = 1)[1])
@@ -129,7 +139,7 @@ class VAETrainer(Trainer):
             # self.score_average  = self.score_average * self.decay + (1-self.decay)* np.mean(identities[best_perm])
             # return entropy_loss,rc_loss, torch.mean(-score*sample_logprob)
             
-            return entropy_loss, rc_loss,0
+            return entropy_loss, rc_loss, torch.zeros(1).to(self.device) #Hack the alignment loss out
 
     def valid_step(self,batch):
         net = self.encoder
@@ -161,6 +171,9 @@ def main(args):
         TRAIN = {"inital_learning_rate":args.lr,
                  "batch_size":args.batch_size,
                  "grad_norm":2,
+                 "epsilon":0.1,
+                 "epsilon_decay":-1e-4,
+                 "preheat":5000,
                  "keep_record":5,
                  "decay":args.decay,
                  "Sleep_Wake_Cycle":args.sleep_cycle}
