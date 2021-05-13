@@ -12,7 +12,7 @@ import torch.utils.data as data
 from torch.utils.data.dataloader import DataLoader
 from xron.xron_input import Dataset, ToTensor
 from xron.xron_train_base import Trainer, DeviceDataLoader, load_config
-from xron.xron_model import REVCNN,DECODER_CONFIG,CRNN
+from xron.xron_model import REVCNN,DECODER_CONFIG,CRNN,MM_CONFIG,MM
 from xron.xron_label import MetricAligner
 from torch.distributions.one_hot_categorical import OneHotCategorical as OHC
 
@@ -163,7 +163,7 @@ class VAETrainer(Trainer):
         return score[best_perm],perms[best_perm]
     
 def main(args):
-    class CTC_CONFIG(DECODER_CONFIG):
+    class CTC_CONFIG(MM_CONFIG):
         CTC = {"beam_size":5,
                "beam_cut_threshold":0.05,
                "alphabeta": "ACGT"}
@@ -195,7 +195,8 @@ def main(args):
         config_old.TRAIN = config.TRAIN #Overwrite training config.
         config = config_old
     encoder = CRNN(config)
-    decoder = REVCNN(config)
+#    decoder = REVCNN(config)
+    decoder = MM(config)
     aligner = MetricAligner(args.reference)
     t = VAETrainer(loader,encoder,decoder,config,aligner)
     if args.retrain:
