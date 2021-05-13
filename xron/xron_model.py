@@ -20,7 +20,7 @@ module_dict = {'Res1d':xron.nn.Res1d,
                'LSTM':nn.LSTM,
                'ReLU':nn.ReLU,
                'Sigmoid':nn.Sigmoid}
-PORE_MODEL_F = "template_median69pA.model"
+PORE_MODEL_F = "pore_models/template_median69pA.model"
 class CNN_CONFIG(object):
     CNN = {'N_Layer':3,
            'Layers': [{'layer_type':'Res1d','kernel_size':5,'stride':1,'out_channels':32},
