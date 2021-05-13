@@ -8,13 +8,13 @@ import toml
 import torch
 from typing import Union,Dict
 from torch.utils.data.dataloader import DataLoader
-from xron.xron_model import CRNN, REVCNN, CONFIG,DECODER_CONFIG
+from xron.xron_model import CRNN, REVCNN, CONFIG,DECODER_CONFIG,MM
 
 
 class Trainer(object):
     def __init__(self,
                  train_dataloader:DataLoader,
-                 nets:Dict[str,Union[CRNN,REVCNN]],
+                 nets:Dict[str,Union[CRNN,REVCNN,MM]],
                  config:Union[CONFIG,DECODER_CONFIG],
                  device:str = None,
                  eval_dataloader:DataLoader = None):
@@ -64,7 +64,12 @@ class Trainer(object):
                 return torch.device('cpu')
         else:
             return torch.device(device)
-        
+
+    def _update_records(self):
+        record_file = os.path.join(self.save_folder,'records.toml')
+        with open(record_file,'w+') as f:
+            toml.dump(self.records,f)
+
     def save(self):
         ckpt_file = os.path.join(self.save_folder,'checkpoint')
         current_ckpt = 'ckpt-'+str(self.global_step)

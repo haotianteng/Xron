@@ -6,6 +6,7 @@ import sys
 import torch
 import argparse
 import numpy as np
+from typing import Union
 from itertools import chain
 from torchvision import transforms
 import torch.utils.data as data
@@ -20,8 +21,8 @@ class VAETrainer(Trainer):
     def __init__(self,
                  train_dataloader:DataLoader,
                  encoder:CRNN,
-                 decoder:REVCNN,
-                 config:DECODER_CONFIG,
+                 decoder:Union[REVCNN,MM],
+                 config:Union[DECODER_CONFIG,MM_CONFIG],
                  aligner:MetricAligner,
                  device:str = None,
                  eval_dataloader:DataLoader = None):
@@ -31,12 +32,14 @@ class VAETrainer(Trainer):
         ----------
         train_dataloader : DataLoader
             Training dataloader.
-        net : REVCNN
-            A REVCNN network instance.
+        encoder: CRNN
+            A Convolutional-Recurrent Neural Network
+        net : Union[REVCNN,MM]
+            Can be a REVCNN or Markov Model instance.
         device: str
             The device used to train the model, can be 'cpu' or 'cuda'.
             Default is None, use cuda device if it's available.
-        config: DECODER_CONFIG
+        config: Union[DECODER_CONFIG,MM_CONFIG]
             A CONFIG class contains unsupervised training configurations. Need 
             to contain at least these parameters: keep_record, device and 
             grad_norm.
@@ -120,7 +123,7 @@ class VAETrainer(Trainer):
         else:
             sampling = torch.argmax(logprob,dim = 2)
             sampling = torch.nn.functional.one_hot(sampling,num_classes = logprob.shape[2]).permute([1,2,0]).float()
-        rc_signal = decoder.forward(sampling).permute([0,2,1]) #[N,L,C] -> [N,C,L]
+        rc_signal = decoder.forward(sampling,device = self.device).permute([0,2,1]) #[N,L,C] -> [N,C,L]
         mse_loss = decoder.mse_loss(rc_signal,signal)
         entropy_loss = decoder.entropy_loss(logprob.permute([1,2,0]),sampling.max(dim = 1)[1])
         if phase == 0: #Phase 0 when we update the decoder
