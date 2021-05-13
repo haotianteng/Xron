@@ -6,6 +6,7 @@ from torch import Tensor
 import numpy as np
 import torch
 import xron.nn
+import pandas as pd
 from copy import deepcopy
 from functools import partial
 from itertools import permutations
@@ -52,8 +53,21 @@ class DECODER_CONFIG(CONFIG):
                              {'out_features':1,'bias':True,'activation':'Linear'}]}
 
 class MM_CONFIG(CONFIG):
-    PORE_MODEL = {"PORE_MODEL":PORE_MODEL_F}
-            
+    PORE_MODEL = {"PORE_MODEL_F":PORE_MODEL_F,
+                  "N_BASE": 4,
+                  "K" : 5}
+    DECODER = {"X_UPSAMPLING":5, #The scale factor of upsampling.
+               "USE_STD":False}
+
+def copy_config(config):
+    class CONFIG:
+        pass
+    config_copy = CONFIG()
+    config_modules = [x for x in config.__dir__() if not x .startswith('_')][::-1]
+    for module in config_modules:
+       setattr(config_copy,module,deepcopy(getattr(config,module)))
+    return config_copy
+
 class CRNN(nn.Module):
     def __init__(self,config:CONFIG):
         """
@@ -67,8 +81,8 @@ class CRNN(nn.Module):
             RNN and FNN attributes.
         """
         super().__init__()
-        self.config = self._copy_config(config)
-        config = self._copy_config(self.config)
+        self.config = copy_config(config)
+        config = copy_config(self.config)
         cnn = self._make_cnn(config.CNN)
         permute = xron.nn.Permute([2,0,1]) #[N,C,L] -> [L,N,C]
         rnn = self._make_rnn(config.RNN,
@@ -79,16 +93,7 @@ class CRNN(nn.Module):
         log_softmax = nn.LogSoftmax(dim = 2)
         self.net = nn.Sequential(*cnn,permute,*rnn,*fnn,log_softmax)
         self.ctc = nn.CTCLoss()
-    
-    def _copy_config(self,config):
-        class CONFIG:
-            pass
-        config_copy = CONFIG()
-        config_modules = [x for x in config.__dir__() if not x .startswith('_')][::-1]
-        for module in config_modules:
-            setattr(config_copy,module,deepcopy(getattr(config,module)))
-        return config_copy
-    
+        
     def _make_cnn(self,cnn_config,in_channels = 1):
         layers = []
         for l in cnn_config['Layers']:
@@ -316,9 +321,9 @@ class REVCNN(nn.Module):
 
         """
         super().__init__()
-        self.config = self._copy_config(config)
+        self.config = copy_config(config)
         self.n_base = config.FNN['Layers'][-1]['out_features']
-        config = self._copy_config(self.config)
+        config = copy_config(self.config)
         cnn = self._make_cnn(config.CNN_DECODER, in_channels = self.n_base)
         permute = xron.nn.Permute([0,2,1]) #[N,C,L] -> [N,L,C]
         fnn = self._make_fnn(config.FNN_DECODER.copy(),
@@ -326,15 +331,6 @@ class REVCNN(nn.Module):
         self.net = nn.Sequential(*cnn,permute,*fnn)
         self.mse_loss = nn.MSELoss(reduction = 'none')
         self.entropy_loss = nn.CrossEntropyLoss()
-    
-    def _copy_config(self,config):
-        class CONFIG:
-            pass
-        config_copy = CONFIG()
-        config_modules = [x for x in config.__dir__() if not x .startswith('_')][::-1]
-        for module in config_modules:
-            setattr(config_copy,module,deepcopy(getattr(config,module)))
-        return config_copy
     
     def _make_cnn(self,cnn_config,in_channels = 1):
         layers = []
@@ -358,7 +354,7 @@ class REVCNN(nn.Module):
         return self.net(batch)
 
 class MM(nn.Module):
-    def __init__(self,config:MM_DECODER_CONFIG):
+    def __init__(self,config:MM_CONFIG):
         """
         The statistical Markov generative pore model, 
 
@@ -372,9 +368,53 @@ class MM(nn.Module):
         None.
         """
         super().__init__()
-        self.config = self._copy_config(config)
-        config = self._copy_config(self.config)
-
+        self.pore_model = pd.read_csv(config.PORE_MODEL['PORE_MODEL_F'],
+                                      delimiter = '\t')
+        self.padding_signal = np.mean(self.pore_model.level_mean)
+        self.config = copy_config(config)
+        config = copy_config(self.config)
+        self.upsampling = torch.nn.Upsample(scale_factor = config.DECODER['X_UPSAMPLING'],
+                                     mode = 'nearest')
+        self.signal_scale = torch.Tensor([1.])
+        self.signal_bias = torch.Tensor([0.])
+    
+    def forward(self, sampling:torch.Tensor):
+        sampling = sampling.cpu().detach().numpy()
+        sampling = np.argmax(sampling,axis = 1)
+        rc_signal = self._kmer_decode(sampling)
+        print(rc_signal.shape)
+        rc_signal = self.upsampling(rc_signal)*self.signal_scale+self.signal_bias
+        return rc_signal
+        
+    def _kmer_decode(self,
+                     sequence_batch):
+        signal_batch = np.zeros((sequence_batch.shape[0],sequence_batch.shape[1]))
+        N_BASE = self.config.PORE_MODEL['N_BASE']
+        K = self.config.PORE_MODEL['K']
+        for i,sequence in enumerate(sequence_batch):
+            kmer_seq = []
+            curr_kmer = 0
+            for base in sequence:
+                kmer_seq.append(curr_kmer)
+                if base == 0:
+                    curr_kmer = curr_kmer
+                else:
+                    curr_kmer = (curr_kmer*(N_BASE+1)+base)%(N_BASE+1)**K
+            kmer_seq = np.asarray(kmer_seq)
+            kmer_seq -= int('1'*K)
+            signal_batch[i,:] = kmer_seq
+            signal_batch[i,kmer_seq>=0] = self.pore_model.level_mean[signal_batch[i,kmer_seq>0]]
+            signal_batch[i,kmer_seq<0] = self.padding_signal
+        signal_batch = torch.from_numpy(signal_batch[:,None,:])
+        return signal_batch
+    
+    @property
+    def mse_loss(self):
+        if self.config.DECODER['USE_STD']:
+            pass #TODO: Implement the std version.
+        else:
+            return nn.MSELoss(reduction= 'none')
+    
 if __name__ == "__main__":
     config = CONFIG()
     encoder = CRNN(config)
@@ -387,3 +427,7 @@ if __name__ == "__main__":
     decoder = REVCNN(decoder_config)
     rc = decoder.forward(output.permute([1,2,0])).permute([0,2,1])
     print("Reconstructed:",rc.shape)
+    mm_config = MM_CONFIG()
+    mm_decoder = MM(mm_config)
+    mm_rc = mm_decoder.forward(output.permute([1,2,0]))
+    print("MM Reconstructed:",mm_rc.shape)
