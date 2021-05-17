@@ -25,10 +25,7 @@ def fast5_iter(fast5_dir,mode = 'r'):
                 continue
             for read_id in root:
                 read_h = root[read_id]['Raw']
-                if 'Signal_Old' in read_h:
-                    signal = np.asarray(read_h[('Signal_Old')],dtype = np.float32)
-                else:
-                    signal = np.asarray(read_h[('Signal')],dtype = np.float32)
+                signal = np.asarray(read_h[('Signal')],dtype = np.float32)
                 read_id = read_h.attrs['read_id']
                 yield read_h,signal,abs_path,read_id.decode("utf-8")
 
