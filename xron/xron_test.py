@@ -15,7 +15,7 @@ from torchvision import transforms
 from matplotlib import pyplot as plt
 from xron.xron_input import Dataset, ToTensor
 from xron.xron_train_base import Trainer, load_config, DeviceDataLoader
-from xron.xron_model import REVCNN,DECODER_CONFIG,CRNN
+from xron.xron_model import REVCNN,DECODER_CONFIG,CRNN,MM
 from torch.distributions.one_hot_categorical import OneHotCategorical as OHC
 
 class Evaluator(Trainer):
@@ -42,7 +42,7 @@ class Evaluator(Trainer):
         prob = torch.exp(logprob)
         m = OHC(prob)
         sampling = m.sample().permute([1,2,0]) #[L,N,C]->[N,C,L]
-        rc_signal = decoder.forward(sampling).permute([0,2,1]) #[N,L,C] -> [N,C,L]
+        rc_signal = decoder.forward(sampling,device = self.device).permute([0,2,1]) #[N,L,C] -> [N,C,L]
         predictions = encoder.ctc_decode(logprob,
                        alphabet = 'N' + self.config.CTC['alphabeta'],
                        beam_size = self.config.CTC['beam_size'],
@@ -74,15 +74,22 @@ if __name__ == "__main__":
     config.EVALUATION = {"batch_size":200,
                          "device":args.device}
     encoder = CRNN(config)
-    decoder = REVCNN(config)
+    # decoder = REVCNN(config)
+    decoder = MM(config)
     e = Evaluator(encoder,decoder,config,device = args.device)
     e.load(args.model_folder)
     
     #Load data
     print("Load data.")
     chunks = np.load(args.chunks)
-    reference = np.load(args.seq)
-    ref_len = np.load(args.seq_len)
+    if args.seq:
+        reference = np.load(args.seq)
+    else:
+        reference = None
+    if args.seq_len:
+        ref_len = np.load(args.seq_len)
+    else:
+        ref_len = None
     dataset = Dataset(chunks,seq = reference,seq_len = ref_len,transform = transforms.Compose([ToTensor()]))
     loader = data.DataLoader(dataset,batch_size = config.EVALUATION["batch_size"],shuffle = True, num_workers = 4)
     DEVICE = args.device
@@ -93,7 +100,6 @@ if __name__ == "__main__":
         break
     rc_signal,prob,predictions,sampling = e.eval_once(batch)
     rc_signal = rc_signal.detach().cpu().numpy()
-    batch = batch.detach().cpu().numpy()
     prob = prob.detach().cpu().numpy()
     sampling = sampling.detach().cpu().numpy()
     norm_signal = (rc_signal - np.mean(rc_signal,axis = 2))/np.std(rc_signal,axis = 2)
@@ -101,10 +107,12 @@ if __name__ == "__main__":
     #Plot
     idx = np.random.randint(low = 0, high = config.EVALUATION['batch_size']-1)
     fig,axs = plt.subplots(nrows = 2,figsize = (20,20))
-    axs[0].plot(norm_signal[idx,0,5:500],label = "Reconstruction")
-    axs[0].plot(batch['signal'].cpu()[idx,0,5:500],label = "Original signal")
+    start_idx = 500
+    last_idx = 1000
+    axs[0].plot(norm_signal[idx,0,start_idx:last_idx],label = "Reconstruction")
+    axs[0].plot(batch['signal'].cpu()[idx,0,start_idx:last_idx],label = "Original signal")
     for i in np.arange(prob.shape[2]):
-        axs[1].plot(prob[:200,idx,i])
+        axs[1].plot(prob[:,idx,i])
     axs[0].legend()
     fig.savefig(os.path.join(args.model_folder,'reconstruction.png'))
         

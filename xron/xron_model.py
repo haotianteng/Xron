@@ -378,7 +378,9 @@ class MM(nn.Module):
         self.signal_scale = torch.nn.Parameter(torch.Tensor([1.]))
         self.signal_bias = torch.nn.Parameter(torch.Tensor([0.]))
         self.entropy_loss = nn.CrossEntropyLoss()
-    
+        self.N_BASE = self.config.PORE_MODEL['N_BASE']
+        self.K = self.config.PORE_MODEL['K']
+        
     def forward(self, sampling:torch.Tensor,device = None):
         sampling = sampling.cpu().detach().numpy()
         sampling = np.argmax(sampling,axis = 1)
@@ -391,24 +393,34 @@ class MM(nn.Module):
     def _kmer_decode(self,
                      sequence_batch):
         signal_batch = np.zeros((sequence_batch.shape[0],sequence_batch.shape[1]))
-        N_BASE = self.config.PORE_MODEL['N_BASE']
-        K = self.config.PORE_MODEL['K']
+        N_BASE = self.N_BASE
+        K = self.K
         for i,sequence in enumerate(sequence_batch):
             kmer_seq = []
-            curr_kmer = 0
+            curr_kmer = ''
             for base in sequence:
-                kmer_seq.append(curr_kmer)
                 if base == 0:
                     curr_kmer = curr_kmer
                 else:
-                    curr_kmer = (curr_kmer*(N_BASE+1)+base)%(N_BASE+1)**K
+                    curr_kmer = (curr_kmer + str(base))[-K:]
+                kmer_seq.append(self.kmer2idx(curr_kmer))
             kmer_seq = np.asarray(kmer_seq)
-            kmer_seq -= int('1'*K)
             signal_batch[i,:] = kmer_seq
-            signal_batch[i,kmer_seq>=0] = self.pore_model.level_mean[signal_batch[i,kmer_seq>0]]
+            signal_batch[i,kmer_seq>=0] = self.pore_model.level_mean[kmer_seq[kmer_seq>=0]]
             signal_batch[i,kmer_seq<0] = self.padding_signal
         signal_batch = torch.from_numpy(signal_batch[:,None,:])
         return signal_batch
+    
+    def kmer2idx(self,kmer:str):
+        if len(kmer)<self.K:
+            return -1
+        multi = 1
+        idx = 0
+        for base in kmer[::-1]:
+            idx += (int(base)-1)*multi
+            multi = multi * self.N_BASE
+        return idx
+    
     
     @property
     def mse_loss(self):
