@@ -375,11 +375,10 @@ class MM(nn.Module):
         config = copy_config(self.config)
         self.upsampling = torch.nn.Upsample(scale_factor = config.DECODER['X_UPSAMPLING'],
                                      mode = 'nearest')
-        self.signal_scale = torch.nn.Parameter(torch.Tensor([1.]))
-        self.signal_bias = torch.nn.Parameter(torch.Tensor([0.]))
         self.entropy_loss = nn.CrossEntropyLoss()
         self.N_BASE = self.config.PORE_MODEL['N_BASE']
         self.K = self.config.PORE_MODEL['K']
+        self.bn = torch.nn.BatchNorm1d(1)
         
     def forward(self, sampling:torch.Tensor,device = None):
         sampling = sampling.cpu().detach().numpy()
@@ -387,7 +386,7 @@ class MM(nn.Module):
         rc_signal = self._kmer_decode(sampling)
         if device:
             rc_signal = rc_signal.to(torch.float32).to(device = device)
-        rc_signal = self.upsampling(rc_signal)*self.signal_scale+self.signal_bias
+        rc_signal = self.bn(self.upsampling(rc_signal))
         return rc_signal.permute([0,2,1])
         
     def _kmer_decode(self,

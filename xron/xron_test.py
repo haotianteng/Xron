@@ -112,7 +112,7 @@ if __name__ == "__main__":
     axs[0].plot(norm_signal[idx,0,start_idx:last_idx],label = "Reconstruction")
     axs[0].plot(batch['signal'].cpu()[idx,0,start_idx:last_idx],label = "Original signal")
     for i in np.arange(prob.shape[2]):
-        axs[1].plot(prob[:,idx,i])
+        axs[1].plot(prob[10:200,idx,i])
     axs[0].legend()
     fig.savefig(os.path.join(args.model_folder,'reconstruction.png'))
         

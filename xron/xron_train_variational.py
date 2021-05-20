@@ -6,7 +6,7 @@ import sys
 import torch
 import argparse
 import numpy as np
-from typing import Union
+from typing import Union,List
 from itertools import chain
 from torchvision import transforms
 import torch.utils.data as data
@@ -60,56 +60,79 @@ class VAETrainer(Trainer):
         params = [encoder.parameters(),decoder.parameters()]
         self.parameters = chain(*params)
         self.train_config = config.TRAIN
+        
         self.decay = self.train_config["decay"]
         self.global_step = 0
         self.awake = False
         self.score_average = 0
-        self.wake_sleep_cycle = config.TRAIN['Sleep_Wake_Cycle']
         self.records = {'rc_losses':[],
                         'rc_losses_encoder':[],
                         'entropy_losses':[],
                         'alignment_score':[],
                         'valid_alignment':[]}
-    def train(self,epoches,optimizer,save_cycle,save_folder):
+    def train(self,
+              epoches:int,
+              optimizers:List[torch.optim.Optimizer],
+              save_cycle:int,
+              save_folder:str):
+        """
+        Train the encoder-decodr nets.
+
+        Parameters
+        ----------
+        epoches : int
+            Number of epoches to train.
+        optimizers : List[torch.optim.Optimizer]
+            A list of two optimizers, the first one is optimizer training the
+            encoder parameters and the second one for decoder parameters.
+        save_cycle : int
+            Save every save_cycle batches.
+        save_folder : str
+            The folder to save the model and training records.
+
+        Returns
+        -------
+        None.
+
+        """
         self.save_folder = save_folder
         self._save_config()
         records = self.records
         preheat = self.train_config["preheat"]
         e_decay = self.train_config["epsilon_decay"]
         epsilon = self.train_config["epsilon"]
+        opt_e = optimizers[0]
+        opt_d = optimizers[1]
         for epoch_i in range(epoches):
             for i_batch, batch in enumerate(self.train_ds):
-                if (self.global_step+1)%self.wake_sleep_cycle == 0:
-                    self.awake = not self.awake
-                    for param in self.encoder.parameters():
-                        param.requires_grad = self.awake
-                    for param in self.decoder.parameters():
-                        param.requires_grad = not self.awake
                 if self.global_step < preheat:
                     self.epsilon = 1
                 else:
                     self.epsilon = max(1+(self.global_step - preheat)*e_decay,epsilon)
                 losses = self.train_step(batch,phase = self.awake)
-                loss = sum(losses)
-                optimizer.zero_grad()
-                loss.backward()
+                e_loss = -losses[0]+losses[1]+losses[3] #Maximize -H(q), minimize -(cross entropy loss)
+                d_loss = losses[2]
+                #Update encoder
+                if self.global_step>=preheat:
+                    opt_e.zero_grad()
+                    e_loss.backward(retain_graph = True)
+                    opt_e.step()
+                #Update decoder
+                opt_d.zero_grad()
+                d_loss.backward()
+                opt_d.step()
                 if (self.global_step+1)%save_cycle==0:
                     self.save()
                     eval_i,valid_batch = next(enumerate(self.eval_ds))
                     valid_error,valid_perm = self.valid_step(valid_batch)
                     records['entropy_losses'].append(losses[0].detach().cpu().numpy()[()])
                     records['valid_alignment'].append(valid_error)
-                    if self.awake:
-                        print("Epoch %d Batch %d, entropy_loss %f, rc_loss %f, valid_error %f, perm:%s, alignment_loss %f"%(epoch_i, i_batch, losses[0], losses[1], valid_error, valid_perm, losses[2]))
-                        records['alignment_score'].append(losses[2].detach().cpu().numpy()[()])
-                        records['rc_losses_encoder'].append(losses[1].detach().cpu().numpy()[()])
-                    else:
-                        print("Epoch %d Batch %d, entropy_loss %f, rc_loss %f, valid_error %f, perm:%s"%(epoch_i, i_batch, losses[0], losses[1], valid_error, valid_perm))
-                        records['rc_losses'].append(losses[1].detach().cpu().numpy()[()])
+                    print("Epoch %d Batch %d, entropy_loss %f, rc_loss %f, encod valid_error %f, perm:%s, alignment_loss %f"%(epoch_i, i_batch, losses[0], losses[2], valid_error, valid_perm, losses[2]))
+                    records['alignment_score'].append(losses[2].detach().cpu().numpy()[()])
+                    records['rc_losses_encoder'].append(losses[1].detach().cpu().numpy()[()])
                     self._update_records()
                 torch.nn.utils.clip_grad_norm_(self.parameters, 
                                                max_norm=self.grad_norm)
-                optimizer.step()
                 self.global_step +=1
         
     def train_step(self,batch,phase = 0):
@@ -126,23 +149,21 @@ class VAETrainer(Trainer):
         rc_signal = decoder.forward(sampling,device = self.device).permute([0,2,1]) #[N,L,C] -> [N,C,L]
         mse_loss = decoder.mse_loss(rc_signal,signal)
         entropy_loss = decoder.entropy_loss(logprob.permute([1,2,0]),sampling.max(dim = 1)[1])
-        if phase == 0: #Phase 0 when we update the decoder
-            rc_loss = torch.mean(mse_loss)
-            return entropy_loss,rc_loss
-        else: #Phase 1 when we update the encoder.
-            raw_seq = torch.argmax(sampling,dim = 1)
-            sample_logprob = torch.sum(logprob.permute([1,2,0])*sampling,axis = (1,2))
-            rc_loss = torch.mean(torch.mean(mse_loss,axis = (1,2))*sample_logprob)
-            
-            # ### Train with aligner
-            # identities,perm = self.aligner.permute_align(raw_seq.cpu().detach().numpy())
-            # score = np.mean(identities,axis = 1)
-            # best_perm = np.argmax(score)
-            # score = torch.from_numpy(identities[best_perm]-self.score_average).to(self.device)
-            # self.score_average  = self.score_average * self.decay + (1-self.decay)* np.mean(identities[best_perm])
-            # return entropy_loss,rc_loss, torch.mean(-score*sample_logprob)
-            
-            return entropy_loss, rc_loss, torch.zeros(1).to(self.device) #Hack the alignment loss out
+        rc_loss_decoder = torch.mean(mse_loss)
+        raw_seq = torch.argmax(sampling,dim = 1)
+        sample_logprob = torch.sum(logprob.permute([1,2,0])*sampling,axis = (1,2))
+        rc_loss_encoder = torch.mean(torch.mean(mse_loss,axis = (1,2))*sample_logprob)
+        # print(torch.mean(mse_loss,axis = (1,2)))
+        # print(sample_logprob)
+        # ### Train with aligner
+        # identities,perm = self.aligner.permute_align(raw_seq.cpu().detach().numpy())
+        # score = np.mean(identities,axis = 1)
+        # best_perm = np.argmax(score)
+        # score = torch.from_numpy(identities[best_perm]-self.score_average).to(self.device)
+        # self.score_average  = self.score_average * self.decay + (1-self.decay)* np.mean(identities[best_perm])
+        # return entropy_loss,rc_loss, torch.mean(-score*sample_logprob)
+        
+        return entropy_loss, rc_loss_encoder, rc_loss_decoder, torch.zeros(1).to(self.device) #Hack the alignment loss out
 
     def valid_step(self,batch):
         net = self.encoder
@@ -175,11 +196,10 @@ def main(args):
                  "batch_size":args.batch_size,
                  "grad_norm":2,
                  "epsilon":0.1,
-                 "epsilon_decay":-1e-4,
-                 "preheat":5000,
+                 "epsilon_decay":0,
+                 "preheat":500,
                  "keep_record":5,
-                 "decay":args.decay,
-                 "Sleep_Wake_Cycle":args.sleep_cycle}
+                 "decay":args.decay,}
         
     config = TRAIN_CONFIG()
     print("Read chunks and sequence.")
@@ -206,10 +226,12 @@ def main(args):
         t.load(model_f)
     lr = args.lr
     epoches = args.epoches
-    optimizer = torch.optim.Adam(t.parameters,lr = lr)
+    opt_encoder = torch.optim.Adam(t.encoder.parameters(),lr = lr)
+    opt_decoder = torch.optim.Adam(t.decoder.parameters(),lr = lr)
+    opts = [opt_encoder,opt_decoder]
     COUNT_CYCLE = args.report
     print("Begin training the model.")
-    t.train(epoches,optimizer,COUNT_CYCLE,model_f)
+    t.train(epoches,opts,COUNT_CYCLE,model_f)
     
         
         
@@ -236,8 +258,6 @@ if __name__ == "__main__":
                         help = "The number of epoches to train.")
     parser.add_argument('--report', default = 10, type = int,
                         help = "The interval of training rounds to report.")
-    parser.add_argument('--sleep_cycle', default = 50, type = int,
-                        help = "The sleep wake cycle.")
     parser.add_argument('--load', dest='retrain', action='store_true',
                         help='Load existed model.')
     parser.add_argument('--decay', type = float, default = 0.99,
