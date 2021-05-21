@@ -101,6 +101,8 @@ class VAETrainer(Trainer):
         preheat = self.train_config["preheat"]
         e_decay = self.train_config["epsilon_decay"]
         epsilon = self.train_config["epsilon"]
+        alpha = self.train_config["alpha"]
+        beta = self.train_config["beta"]
         opt_e = optimizers[0]
         opt_d = optimizers[1]
         for epoch_i in range(epoches):
@@ -110,7 +112,7 @@ class VAETrainer(Trainer):
                 else:
                     self.epsilon = max(1+(self.global_step - preheat)*e_decay,epsilon)
                 losses = self.train_step(batch,phase = self.awake)
-                e_loss = -losses[0]+losses[1]+losses[3] #Maximize -H(q), minimize -(cross entropy loss)
+                e_loss = -alpha*losses[0]+beta*losses[1]+losses[3] #Maximize -H(q), minimize -(cross entropy loss)
                 d_loss = losses[2]
                 #Update encoder
                 if self.global_step>=preheat:
@@ -146,7 +148,8 @@ class VAETrainer(Trainer):
         else:
             sampling = torch.argmax(logprob,dim = 2)
             sampling = torch.nn.functional.one_hot(sampling,num_classes = logprob.shape[2]).permute([1,2,0]).float()
-        rc_signal = decoder.forward(sampling,device = self.device).permute([0,2,1]) #[N,L,C] -> [N,C,L]
+        # rc_signal = decoder.forward(sampling,device = self.device).permute([0,2,1]) #[N,L,C] -> [N,C,L]
+        rc_signal = decoder.forward(sampling).permute([0,2,1]) #[N,L,C] -> [N,C,L]
         mse_loss = decoder.mse_loss(rc_signal,signal)
         entropy_loss = decoder.entropy_loss(logprob.permute([1,2,0]),sampling.max(dim = 1)[1])
         rc_loss_decoder = torch.mean(mse_loss)
@@ -187,7 +190,7 @@ class VAETrainer(Trainer):
         return score[best_perm],perms[best_perm]
     
 def main(args):
-    class CTC_CONFIG(MM_CONFIG):
+    class CTC_CONFIG(DECODER_CONFIG):
         CTC = {"beam_size":5,
                "beam_cut_threshold":0.05,
                "alphabeta": "ACGT"}
@@ -197,6 +200,9 @@ def main(args):
                  "grad_norm":2,
                  "epsilon":0.1,
                  "epsilon_decay":0,
+                 "alpha":0.1,
+                 "beta": 1,
+                 "gamma":0,
                  "preheat":500,
                  "keep_record":5,
                  "decay":args.decay,}
@@ -218,8 +224,8 @@ def main(args):
         config_old.TRAIN = config.TRAIN #Overwrite training config.
         config = config_old
     encoder = CRNN(config)
-#    decoder = REVCNN(config)
-    decoder = MM(config)
+    decoder = REVCNN(config)
+    # decoder = MM(config)
     aligner = MetricAligner(args.reference)
     t = VAETrainer(loader,encoder,decoder,config,aligner)
     if args.retrain:
