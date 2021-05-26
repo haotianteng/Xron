@@ -11,6 +11,7 @@ import torch
 import argparse
 import numpy as np
 import torch.utils.data as data
+from typing import List,Union
 from torchvision import transforms
 from matplotlib import pyplot as plt
 from xron.xron_input import Dataset, ToTensor
@@ -21,28 +22,32 @@ from torch.distributions.one_hot_categorical import OneHotCategorical as OHC
 class Evaluator(Trainer):
     def __init__(self, 
                  encoder:CRNN, 
-                 decoder:REVCNN,
+                 decoders:List[Union[REVCNN,MM]],
                  config:DECODER_CONFIG,
                  device:str = None):
         device = config.EVALUATION['device']
         super().__init__(train_dataloader=None,
                        nets = {"encoder":encoder,
-                               "decoder":decoder},
+                               "decoder":decoders[0],
+                               "mm":decoders[1]},
                        config = config,
                        device = device,
                        eval_dataloader = None)
         self.encoder = encoder
-        self.decoder = decoder
+        self.decoder_revcnn, self.decoder_mm = decoders
         
     def eval_once(self,batch:np.ndarray):
         encoder = self.encoder
-        decoder = self.decoder
+        d1 = self.decoder_revcnn
+        d2 = self.decoder_mm
         signal = batch['signal']
         logprob = encoder.forward(signal) #[L,N,C]
         prob = torch.exp(logprob)
         m = OHC(prob)
         sampling = m.sample().permute([1,2,0]) #[L,N,C]->[N,C,L]
-        rc_signal = decoder.forward(sampling,device = self.device).permute([0,2,1]) #[N,L,C] -> [N,C,L]
+        rc_signal = d1.forward(sampling).permute([0,2,1]) #[N,L,C] -> [N,C,L]
+        if d2:
+            rc_signal += d2.forward(sampling,device = self.device).permute([0,2,1])
         predictions = encoder.ctc_decode(logprob,
                        alphabet = 'N' + self.config.CTC['alphabeta'],
                        beam_size = self.config.CTC['beam_size'],
@@ -74,9 +79,9 @@ if __name__ == "__main__":
     config.EVALUATION = {"batch_size":200,
                          "device":args.device}
     encoder = CRNN(config)
-    # decoder = REVCNN(config)
-    decoder = MM(config)
-    e = Evaluator(encoder,decoder,config,device = args.device)
+    revcnn = REVCNN(config) if 'CNN_DECODER' in config.__dict__.keys() else None
+    mm = MM(config) if 'PORE_MODEL' in config.__dict__.keys() else None
+    e = Evaluator(encoder,[revcnn,mm],config,device = args.device)
     e.load(args.model_folder)
     
     #Load data

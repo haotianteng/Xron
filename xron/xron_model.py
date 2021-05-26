@@ -52,7 +52,7 @@ class DECODER_CONFIG(CONFIG):
                    'Layers':[{'out_features':8,'bias':True,'activation':'ReLU'},
                              {'out_features':1,'bias':True,'activation':'Linear'}]}
 
-class MM_CONFIG(CONFIG):
+class MM_CONFIG(DECODER_CONFIG):
     PORE_MODEL = {"PORE_MODEL_F":PORE_MODEL_F,
                   "N_BASE": 4,
                   "K" : 5}

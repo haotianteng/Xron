@@ -21,7 +21,8 @@ class VAETrainer(Trainer):
     def __init__(self,
                  train_dataloader:DataLoader,
                  encoder:CRNN,
-                 decoder:Union[REVCNN,MM],
+                 decoder:REVCNN,
+                 mm:MM,
                  config:Union[DECODER_CONFIG,MM_CONFIG],
                  aligner:MetricAligner,
                  device:str = None,
@@ -34,8 +35,10 @@ class VAETrainer(Trainer):
             Training dataloader.
         encoder: CRNN
             A Convolutional-Recurrent Neural Network
-        net : Union[REVCNN,MM]
-            Can be a REVCNN or Markov Model instance.
+        decoder : REVCNN
+            REVCNN decoder
+        mm: MM
+            Markov Model instance.
         device: str
             The device used to train the model, can be 'cpu' or 'cuda'.
             Default is None, use cuda device if it's available.
@@ -50,14 +53,19 @@ class VAETrainer(Trainer):
         """
         super().__init__(train_dataloader=train_dataloader,
                          nets = {"encoder":encoder,
-                                 "decoder":decoder},
+                                 "decoder":decoder,
+                                 "mm":mm},
                          config = config,
                          device = device,
                          eval_dataloader = eval_dataloader)
         self.encoder = encoder
         self.decoder = decoder
+        self.mm = mm
         self.aligner = aligner
-        params = [encoder.parameters(),decoder.parameters()]
+        params = [encoder.parameters(),decoder.parameters(),mm.parameters()]
+        d_params = [decoder.parameters(),mm.parameters()]
+        self.decoder_parameters = chain(*d_params)
+        self.encoder_parameters = encoder.parameters()
         self.parameters = chain(*params)
         self.train_config = config.TRAIN
         
@@ -103,25 +111,22 @@ class VAETrainer(Trainer):
         epsilon = self.train_config["epsilon"]
         alpha = self.train_config["alpha"]
         beta = self.train_config["beta"]
-        opt_e = optimizers[0]
-        opt_d = optimizers[1]
+        gamma = self.train_config["gamma"]
+        opt_e,opt_d = optimizers
         for epoch_i in range(epoches):
             for i_batch, batch in enumerate(self.train_ds):
                 if self.global_step < preheat:
                     self.epsilon = 1
                 else:
                     self.epsilon = max(1+(self.global_step - preheat)*e_decay,epsilon)
-                losses = self.train_step(batch,phase = self.awake)
-                e_loss = -alpha*losses[0]+beta*losses[1]+losses[3] #Maximize -H(q), minimize -(cross entropy loss)
-                d_loss = losses[2]
-                #Update encoder
-                if self.global_step>=preheat:
-                    opt_e.zero_grad()
-                    e_loss.backward(retain_graph = True)
-                    opt_e.step()
-                #Update decoder
+                losses = self.train_step(batch)
+                loss = -alpha*losses[0]+beta*losses[1]+gamma*losses[2] #Maximize -H(q), minimize -(cross entropy loss)
+                opt_e.zero_grad()
+                loss.backward()
+                _,_,_,loss = self.train_step(batch)
                 opt_d.zero_grad()
-                d_loss.backward()
+                loss.backward()
+                opt_e.step()
                 opt_d.step()
                 if (self.global_step+1)%save_cycle==0:
                     self.save()
@@ -129,17 +134,19 @@ class VAETrainer(Trainer):
                     valid_error,valid_perm = self.valid_step(valid_batch)
                     records['entropy_losses'].append(losses[0].detach().cpu().numpy()[()])
                     records['valid_alignment'].append(valid_error)
-                    print("Epoch %d Batch %d, entropy_loss %f, rc_loss %f, encod valid_error %f, perm:%s, alignment_loss %f"%(epoch_i, i_batch, losses[0], losses[2], valid_error, valid_perm, losses[2]))
+                    print("Epoch %d Batch %d, entropy_loss %f, rc_loss %f, encod valid_error %f, perm:%s, alignment_loss %f"%(epoch_i, i_batch, losses[0], losses[3], valid_error, valid_perm, losses[2]))
                     records['alignment_score'].append(losses[2].detach().cpu().numpy()[()])
                     records['rc_losses_encoder'].append(losses[1].detach().cpu().numpy()[()])
                     self._update_records()
+                losses = None
                 torch.nn.utils.clip_grad_norm_(self.parameters, 
                                                max_norm=self.grad_norm)
                 self.global_step +=1
         
-    def train_step(self,batch,phase = 0):
+    def train_step(self,batch):
         encoder = self.encoder
         decoder = self.decoder
+        mm = self.mm
         signal = batch['signal']
         logprob = encoder.forward(signal) #[L,N,C]
         if np.random.rand()<self.epsilon:
@@ -148,14 +155,16 @@ class VAETrainer(Trainer):
         else:
             sampling = torch.argmax(logprob,dim = 2)
             sampling = torch.nn.functional.one_hot(sampling,num_classes = logprob.shape[2]).permute([1,2,0]).float()
-        # rc_signal = decoder.forward(sampling,device = self.device).permute([0,2,1]) #[N,L,C] -> [N,C,L]
-        rc_signal = decoder.forward(sampling).permute([0,2,1]) #[N,L,C] -> [N,C,L]
+        rc_mm = mm.forward(sampling,device = self.device).permute([0,2,1]) #[N,L,C] -> [N,C,L]
+        rc_revcnn = decoder.forward(sampling).permute([0,2,1]) #[N,L,C] -> [N,C,L]
+        rc_signal = rc_mm + rc_revcnn
+        # rc_signal = rc_revcnn
         mse_loss = decoder.mse_loss(rc_signal,signal)
         entropy_loss = decoder.entropy_loss(logprob.permute([1,2,0]),sampling.max(dim = 1)[1])
-        rc_loss_decoder = torch.mean(mse_loss)
         raw_seq = torch.argmax(sampling,dim = 1)
         sample_logprob = torch.sum(logprob.permute([1,2,0])*sampling,axis = (1,2))
-        rc_loss_encoder = torch.mean(torch.mean(mse_loss,axis = (1,2))*sample_logprob)
+        rc_loss = torch.mean(torch.mean(mse_loss,axis = (1,2))*sample_logprob)
+        rc_loss_raw = torch.mean(mse_loss)
         # print(torch.mean(mse_loss,axis = (1,2)))
         # print(sample_logprob)
         # ### Train with aligner
@@ -165,9 +174,8 @@ class VAETrainer(Trainer):
         # score = torch.from_numpy(identities[best_perm]-self.score_average).to(self.device)
         # self.score_average  = self.score_average * self.decay + (1-self.decay)* np.mean(identities[best_perm])
         # return entropy_loss,rc_loss, torch.mean(-score*sample_logprob)
-        
-        return entropy_loss, rc_loss_encoder, rc_loss_decoder, torch.zeros(1).to(self.device) #Hack the alignment loss out
-
+        return entropy_loss, rc_loss, torch.zeros(1).to(self.device),rc_loss_raw #Hack the alignment loss out
+    
     def valid_step(self,batch):
         net = self.encoder
         signal_batch = batch['signal']
@@ -190,7 +198,7 @@ class VAETrainer(Trainer):
         return score[best_perm],perms[best_perm]
     
 def main(args):
-    class CTC_CONFIG(DECODER_CONFIG):
+    class CTC_CONFIG(MM_CONFIG):
         CTC = {"beam_size":5,
                "beam_cut_threshold":0.05,
                "alphabeta": "ACGT"}
@@ -200,8 +208,8 @@ def main(args):
                  "grad_norm":2,
                  "epsilon":0.1,
                  "epsilon_decay":0,
-                 "alpha":0.1,
-                 "beta": 1,
+                 "alpha":1.,
+                 "beta": 1.,
                  "gamma":0,
                  "preheat":500,
                  "keep_record":5,
@@ -225,19 +233,18 @@ def main(args):
         config = config_old
     encoder = CRNN(config)
     decoder = REVCNN(config)
-    # decoder = MM(config)
+    mm = MM(config)
     aligner = MetricAligner(args.reference)
-    t = VAETrainer(loader,encoder,decoder,config,aligner)
+    t = VAETrainer(loader,encoder,decoder,mm,config,aligner)
     if args.retrain:
         t.load(model_f)
     lr = args.lr
     epoches = args.epoches
-    opt_encoder = torch.optim.Adam(t.encoder.parameters(),lr = lr)
-    opt_decoder = torch.optim.Adam(t.decoder.parameters(),lr = lr)
-    opts = [opt_encoder,opt_decoder]
+    opt_e = torch.optim.Adam(t.encoder_parameters,lr = lr)
+    opt_d = torch.optim.Adam(t.decoder_parameters,lr = lr)
     COUNT_CYCLE = args.report
     print("Begin training the model.")
-    t.train(epoches,opts,COUNT_CYCLE,model_f)
+    t.train(epoches,[opt_e,opt_d],COUNT_CYCLE,model_f)
     
         
         
