@@ -117,13 +117,17 @@ class VAETrainer(Trainer):
             for i_batch, batch in enumerate(self.train_ds):
                 if self.global_step < preheat:
                     self.epsilon = 1
+                    use_revcnn = False
                 else:
                     self.epsilon = max(1+(self.global_step - preheat)*e_decay,epsilon)
+                    for param in self.mm.parameters():
+                        param.requires_grad = False
+                    use_revcnn = True
                 losses = self.train_step(batch)
                 loss = -alpha*losses[0]+beta*losses[1]+gamma*losses[2] #Maximize -H(q), minimize -(cross entropy loss)
                 opt_e.zero_grad()
                 loss.backward()
-                _,_,_,loss = self.train_step(batch)
+                _,_,_,loss = self.train_step(batch,comp_signal = use_revcnn)
                 opt_d.zero_grad()
                 loss.backward()
                 opt_e.step()
@@ -143,7 +147,7 @@ class VAETrainer(Trainer):
                                                max_norm=self.grad_norm)
                 self.global_step +=1
         
-    def train_step(self,batch):
+    def train_step(self,batch,comp_signal = False):
         encoder = self.encoder
         decoder = self.decoder
         mm = self.mm
@@ -157,8 +161,9 @@ class VAETrainer(Trainer):
             sampling = torch.nn.functional.one_hot(sampling,num_classes = logprob.shape[2]).permute([1,2,0]).float()
         rc_mm = mm.forward(sampling,device = self.device).permute([0,2,1]) #[N,L,C] -> [N,C,L]
         rc_revcnn = decoder.forward(sampling).permute([0,2,1]) #[N,L,C] -> [N,C,L]
-        rc_signal = rc_mm + rc_revcnn
-        # rc_signal = rc_revcnn
+        rc_signal = rc_mm
+        if comp_signal:
+            rc_signal += rc_revcnn
         mse_loss = decoder.mse_loss(rc_signal,signal)
         entropy_loss = decoder.entropy_loss(logprob.permute([1,2,0]),sampling.max(dim = 1)[1])
         raw_seq = torch.argmax(sampling,dim = 1)
