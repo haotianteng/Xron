@@ -112,7 +112,7 @@ class VAETrainer(Trainer):
         alpha = self.train_config["alpha"]
         beta = self.train_config["beta"]
         gamma = self.train_config["gamma"]
-        opt_e,opt_d = optimizers
+        opt_e,opt_g,opt_d = optimizers
         for epoch_i in range(epoches):
             for i_batch, batch in enumerate(self.train_ds):
                 if self.global_step < preheat:
@@ -128,10 +128,15 @@ class VAETrainer(Trainer):
                 opt_e.zero_grad()
                 loss.backward()
                 _,_,_,loss = self.train_step(batch,comp_signal = use_revcnn)
-                opt_d.zero_grad()
-                loss.backward()
+                if use_revcnn:
+                    opt_d.zero_grad()
+                    loss.backward()
+                    opt_d.step()
+                else:
+                    opt_g.zero_grad()
+                    loss.backward()
+                    opt_g.step()
                 opt_e.step()
-                opt_d.step()
                 if (self.global_step+1)%save_cycle==0:
                     self.save()
                     eval_i,valid_batch = next(enumerate(self.eval_ds))
@@ -245,11 +250,12 @@ def main(args):
         t.load(model_f)
     lr = args.lr
     epoches = args.epoches
-    opt_e = torch.optim.Adam(t.encoder_parameters,lr = lr)
-    opt_d = torch.optim.Adam(t.decoder_parameters,lr = lr)
+    opt_e = torch.optim.SparseAdam(list(t.encoder_parameters),lr = lr)
+    opt_mm = torch.optim.SparseAdam(list(t.mm.parameters()),lr = lr)
+    opt_revcnn = torch.optim.SparseAdam(list(t.decoder.parameters()),lr = lr)
     COUNT_CYCLE = args.report
     print("Begin training the model.")
-    t.train(epoches,[opt_e,opt_d],COUNT_CYCLE,model_f)
+    t.train(epoches,[opt_e,opt_mm,opt_revcnn],COUNT_CYCLE,model_f)
     
         
         

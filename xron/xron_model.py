@@ -20,7 +20,7 @@ module_dict = {'Res1d':xron.nn.Res1d,
                'LSTM':nn.LSTM,
                'ReLU':nn.ReLU,
                'Sigmoid':nn.Sigmoid}
-PORE_MODEL_F = "pore_models/template_median69pA.model"
+PORE_MODEL_F = "pore_models/5mer_level_table.model"
 class CNN_CONFIG(object):
     CNN = {'N_Layer':3,
            'Layers': [{'layer_type':'Res1d','kernel_size':5,'stride':1,'out_channels':32},
@@ -371,6 +371,10 @@ class MM(nn.Module):
         self.pore_model = pd.read_csv(config.PORE_MODEL['PORE_MODEL_F'],
                                       delimiter = '\t')
         self.padding_signal = np.mean(self.pore_model.level_mean)
+        level_tensor = torch.tensor([self.padding_signal]+list(self.pore_model.level_mean)).unsqueeze(1).to(torch.float32)
+        self.level_embedding = nn.Embedding.from_pretrained(level_tensor,
+                                                            freeze = False,
+                                                            padding_idx=0)
         self.config = copy_config(config)
         config = copy_config(self.config)
         self.upsampling = torch.nn.Upsample(scale_factor = config.DECODER['X_UPSAMPLING'],
@@ -383,32 +387,33 @@ class MM(nn.Module):
     def forward(self, sampling:torch.Tensor,device = None):
         sampling = sampling.cpu().detach().numpy()
         sampling = np.argmax(sampling,axis = 1)
-        rc_signal = self._kmer_decode(sampling)
+        kmer_batch = self._kmer_decode(sampling)
         if device:
-            rc_signal = rc_signal.to(torch.float32).to(device = device)
+            kmer_batch = kmer_batch.to(device = device)
+        rc_signal = self.level_embedding(kmer_batch).squeeze(2).unsqueeze(1) # (N,L,1) -> (N,1,L)
         rc_signal = self.bn(self.upsampling(rc_signal))
         return rc_signal.permute([0,2,1])
         
     def _kmer_decode(self,
                      sequence_batch):
-        signal_batch = np.zeros((sequence_batch.shape[0],sequence_batch.shape[1]))
+        kmer_batch = np.zeros((sequence_batch.shape[0],sequence_batch.shape[1]))
         N_BASE = self.N_BASE
         K = self.K
         for i,sequence in enumerate(sequence_batch):
             kmer_seq = []
             curr_kmer = ''
+            pre_base = 0
             for base in sequence:
-                if base == 0:
+                if base == 0 or base == pre_base:
                     curr_kmer = curr_kmer
                 else:
                     curr_kmer = (curr_kmer + str(base))[-K:]
+                pre_base = base
                 kmer_seq.append(self.kmer2idx(curr_kmer))
             kmer_seq = np.asarray(kmer_seq)
-            signal_batch[i,:] = kmer_seq
-            signal_batch[i,kmer_seq>=0] = self.pore_model.level_mean[kmer_seq[kmer_seq>=0]]
-            signal_batch[i,kmer_seq<0] = self.padding_signal
-        signal_batch = torch.from_numpy(signal_batch[:,None,:])
-        return signal_batch
+            kmer_batch[i,:] = kmer_seq+1
+        # signal_batch = torch.from_numpy(signal_batch[:,None,:])
+        return torch.LongTensor(kmer_batch)
     
     def kmer2idx(self,kmer:str):
         if len(kmer)<self.K:
