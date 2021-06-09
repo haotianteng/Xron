@@ -250,9 +250,9 @@ def main(args):
         t.load(model_f)
     lr = args.lr
     epoches = args.epoches
-    opt_e = torch.optim.SparseAdam(list(t.encoder_parameters),lr = lr)
-    opt_mm = torch.optim.SparseAdam(list(t.mm.parameters()),lr = lr)
-    opt_revcnn = torch.optim.SparseAdam(list(t.decoder.parameters()),lr = lr)
+    opt_e = torch.optim.Adam(t.encoder_parameters,lr = lr)
+    opt_mm = torch.optim.SGD(t.mm.parameters(),lr = lr)
+    opt_revcnn = torch.optim.Adam(t.decoder.parameters(),lr = lr)
     COUNT_CYCLE = args.report
     print("Begin training the model.")
     t.train(epoches,[opt_e,opt_mm,opt_revcnn],COUNT_CYCLE,model_f)
