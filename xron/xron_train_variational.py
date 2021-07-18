@@ -218,9 +218,9 @@ def main(args):
                  "grad_norm":2,
                  "epsilon":0.1,
                  "epsilon_decay":0,
-                 "alpha":1.,
-                 "beta": 1.,
-                 "gamma":0,
+                 "alpha":0.1, #Entropy loss scale factor
+                 "beta": 1., #Reconstruction loss scale factor
+                 "gamma":0, #Alignment loss scale factor
                  "preheat":500,
                  "keep_record":5,
                  "decay":args.decay,}
