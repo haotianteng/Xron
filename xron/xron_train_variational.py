@@ -78,6 +78,11 @@ class VAETrainer(Trainer):
                         'entropy_losses':[],
                         'alignment_score':[],
                         'valid_alignment':[]}
+    def _clear_grad(self):
+        self.encoder.zero_grad()
+        self.decoder.zero_grad()
+        self.mm.zero_grad()
+
     def train(self,
               epoches:int,
               optimizers:List[torch.optim.Optimizer],
@@ -117,25 +122,20 @@ class VAETrainer(Trainer):
             for i_batch, batch in enumerate(self.train_ds):
                 if self.global_step < preheat:
                     self.epsilon = 1
-                    use_revcnn = False
                 else:
                     self.epsilon = max(1+(self.global_step - preheat)*e_decay,epsilon)
-                    for param in self.mm.parameters():
-                        param.requires_grad = False
-                    use_revcnn = True
+                losses = self.train_step(batch)
+                opt_g.zero_grad()
+                losses[-1].backward()
+                opt_g.step()
+                losses = self.train_step(batch)
+                opt_d.zero_grad()
+                losses[-2].backward()
+                opt_d.step()
                 losses = self.train_step(batch)
                 loss = -alpha*losses[0]+beta*losses[1]+gamma*losses[2] #Maximize -H(q), minimize -(cross entropy loss)
                 opt_e.zero_grad()
                 loss.backward()
-                _,_,_,loss = self.train_step(batch,comp_signal = use_revcnn)
-                if use_revcnn:
-                    opt_d.zero_grad()
-                    loss.backward()
-                    opt_d.step()
-                else:
-                    opt_g.zero_grad()
-                    loss.backward()
-                    opt_g.step()
                 opt_e.step()
                 if (self.global_step+1)%save_cycle==0:
                     self.save()
@@ -152,7 +152,7 @@ class VAETrainer(Trainer):
                                                max_norm=self.grad_norm)
                 self.global_step +=1
         
-    def train_step(self,batch,comp_signal = False):
+    def train_step(self,batch):
         encoder = self.encoder
         decoder = self.decoder
         mm = self.mm
@@ -166,15 +166,16 @@ class VAETrainer(Trainer):
             sampling = torch.nn.functional.one_hot(sampling,num_classes = logprob.shape[2]).permute([1,2,0]).float()
         rc_mm = mm.forward(sampling,device = self.device).permute([0,2,1]) #[N,L,C] -> [N,C,L]
         rc_revcnn = decoder.forward(sampling).permute([0,2,1]) #[N,L,C] -> [N,C,L]
-        rc_signal = rc_mm
-        if comp_signal:
-            rc_signal += rc_revcnn
-        mse_loss = decoder.mse_loss(rc_signal,signal)
+        rc_signal = rc_mm+rc_revcnn
+        mse_combine = decoder.mse_loss(rc_signal,signal)
+        mse_mm = decoder.mse_loss(rc_mm,signal)
         entropy_loss = decoder.entropy_loss(logprob.permute([1,2,0]),sampling.max(dim = 1)[1])
         raw_seq = torch.argmax(sampling,dim = 1)
         sample_logprob = torch.sum(logprob.permute([1,2,0])*sampling,axis = (1,2))
-        rc_loss = torch.mean(torch.mean(mse_loss,axis = (1,2))*sample_logprob)
-        rc_loss_raw = torch.mean(mse_loss)
+        rc_loss = torch.mean(torch.mean(mse_combine,axis = (1,2))*sample_logprob)
+        decoder_loss_combine = torch.mean(mse_combine)
+        decoder_loss_mm = torch.mean(mse_mm)
+
         # print(torch.mean(mse_loss,axis = (1,2)))
         # print(sample_logprob)
         # ### Train with aligner
@@ -184,7 +185,7 @@ class VAETrainer(Trainer):
         # score = torch.from_numpy(identities[best_perm]-self.score_average).to(self.device)
         # self.score_average  = self.score_average * self.decay + (1-self.decay)* np.mean(identities[best_perm])
         # return entropy_loss,rc_loss, torch.mean(-score*sample_logprob)
-        return entropy_loss, rc_loss, torch.zeros(1).to(self.device),rc_loss_raw #Hack the alignment loss out
+        return entropy_loss, rc_loss, torch.zeros(1).to(self.device),decoder_loss_combine,decoder_loss_mm #Hack the alignment loss out
     
     def valid_step(self,batch):
         net = self.encoder
