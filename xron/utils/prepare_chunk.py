@@ -36,9 +36,10 @@ def fast5_iter(fast5_dir,mode = 'r'):
                 print("Reading %s failed due to %s."%(abs_path,e))
                 continue
             for read_id in root:
-                read_h = root[read_id]['Raw']
-                signal = np.asarray(read_h[('Signal')],dtype = np.float32)
-                read_id = read_h.attrs['read_id']
+                read_h = root[read_id]
+                signal_h = read_h['Raw']
+                signal = np.asarray(signal_h[('Signal')],dtype = np.float32)
+                read_id = signal_h.attrs['read_id']
                 yield read_h,signal,abs_path,read_id.decode("utf-8")
 
 def med_mad(x, factor=1.4826):
@@ -84,32 +85,43 @@ def retrive_seq(seq_h,event_stride):
 
 def extract(args):
     iterator = fast5_iter(args.input_fast5,mode = 'r')
-    aligner = MetricAligner(args.reference,options = '-x ont2d')
+    if args.extract_seq:
+        print("Read reference genome.")
+        aligner = MetricAligner(args.reference,options = '-x ont2d')
+    print("Begin process the reads.")
     meta_info = []
     chunks = []
     seqs = []
+    if args.mode == "rna" or args.mode == "rna_meth":
+        reverse_sig = True
+        
     for read_h,signal,fast5_f,read_id in tqdm(iterator):
         read_len = len(signal)
         signal = norm_by_noisiest_section(signal).astype(np.float16)
-        if args.mode == "rna" or args.mode == "rna-meth":
+        if reverse_sig:
             signal = signal[::-1]
-        if args.extract_seq:
+        if args.extract_seq:    
             seq, pos = retrive_seq(read_h['Analyses/Basecall_1D_%s'%(args.basecall_entry)],
                                    args.stride)
             seq = clean_repr(seq) #M->A, U->T
-            hit = aligner.align_seq(seq)
-            if not hit:
+            hits,ref_seq,ref_idx = aligner.ref_seq(seq)
+            if not hits:
                 continue
-            hit = hit[0]
-            if hit.orient == '-':
-                seq = reverse_complement(seq)
-                
-            start = read_h['Analyses/Segmentation_001/Summary/segmentation'].attrs['first_sample_template']
-            signal = signal[start:]
-            read_len -= start
+            start = int(read_h['Analyses/Segmentation_%s/Summary/segmentation'%(args.basecall_entry)].attrs['first_sample_template'])
+            if reverse_sig:
+                signal = signal[:-start]
+            else:
+                signal = signal[start:]
+            signal = signal[:len(pos)]
+            read_len = len(pos)
             for x in np.arange(0,read_len,args.chunk_len):
-                s,e = pos[x:x+args.chunk_len][[1,-1]]
-                seqs.append(seq[s:e])
+                s,e = pos[x:x+args.chunk_len][[0,-1]]
+                mask = (ref_idx>=s)&(ref_idx<=e)
+                if sum(mask) > 0:
+                    r_s,r_e = np.where(mask)[0][[0,-1]]
+                    seqs.append(ref_seq[r_s:r_e+1])
+                else:
+                    seqs.append('')
         current_chunks = np.split(signal,np.arange(0,read_len,args.chunk_len))[1:]
         last_chunk = current_chunks[-1]
         current_chunks[-1]= np.pad(last_chunk,(0,args.chunk_len-len(last_chunk)),'constant',constant_values = (0,0))
@@ -127,7 +139,7 @@ def extract(args):
         np.save(os.path.join(args.output,'seq_lens.npy'),seq_lens)
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(prog='xron',
+    parser = argparse.ArgumentParser(prog='xron',   
                                      description='A Unsupervised Nanopore basecaller.')
     parser.add_argument('-i', 
                         '--input_fast5', 
@@ -142,13 +154,13 @@ if __name__ == "__main__":
                         type=int,
                         help="The lenght of the segment in chunk.")
     parser.add_argument("--extract_seq",
-                        action = "store_true",
+                        action = "store_true",  
                         help = "If the sequence information is going to be\
                             extracted.")
     parser.add_argument('--basecall_entry',
                         default = "000",
                         help="The entry number in /Analysis/ to look into, for\
-                            example 000 means looking for BaseCall_1D_000.")
+                            example 000 means looking for Basecall_1D_000.")
     parser.add_argument('--stride',
                         default = 10,
                         type = int,
@@ -170,3 +182,5 @@ if __name__ == "__main__":
             raise ValueError("Reference genome is required when extract the \
                              sequence.")
     extract(FLAGS)
+    if not os.path.isdir(FLAGS.output):
+        os.makedirs(FLAGS.output)

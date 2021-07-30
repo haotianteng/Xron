@@ -17,7 +17,10 @@ from typing import List, Optional
 from xron.utils.seq_op import raw2seq
 from itertools import permutations
 from collections import defaultdict
+from Bio.Seq import Seq
 
+def reverse_complement(seq):    
+    return str(Seq(seq).reverse_complement())
 
 class MetricAligner(bwapy.BwaAligner):
     def __init__(self,
@@ -41,13 +44,13 @@ class MetricAligner(bwapy.BwaAligner):
         if not options:
             options = '-A 1 -B 1 -k %d -O 3 -T 0'%(min_len)
         super().__init__(index = reference,options = options)
-        self.reference = defaultdict(list)
+        self.reference = defaultdict(str)
         with open(reference,'r') as f:
             for line in f:
                 if line.startswith(">"):
                     key = line.strip().split(' ')[0][1:]
                 else:
-                    self.reference[key].append(line.strip())
+                    self.reference[key]+= line.strip()
     
     def permute_align(self,
                       raw: ndarray,
@@ -157,17 +160,36 @@ class MetricAligner(bwapy.BwaAligner):
         """
         hits = self.align_seq(seq)
         if not hits:
-            return None,None
+            return [],None,None
         hit = hits[0]
         cigar = hit.cigar
         n_deletion = self._count_cigar(cigar,'D')
-        n_insertion = self._count_cigar(cigar,'I')
         n_match = self._count_cigar(cigar,'M')
-        clips = re.findall(r'(\d+)S', cigar)
         ref_len = n_match + n_deletion 
         ref_seq = self.reference[hit.rname][hit.pos:hit.pos+ref_len]
+        ref_idx = np.zeros(len(ref_seq))
         increment = [int(x) for x in re.findall(r'(\d+)',cigar)]
         operation = re.findall(r'[A-Za-z]',cigar)
+        curr = 0
+        curr_query = 0
+        for inc,op in zip(increment,operation):
+            if op == "S":
+                curr_query += inc
+            elif op == "M":
+                ref_idx[curr:curr+inc] = np.arange(curr_query,curr_query + inc)
+                curr += inc
+                curr_query += inc
+            elif op == "I":
+                curr_query += inc
+            elif op == "D":
+                ref_idx[curr:curr+inc] = curr
+                curr += inc
+        if hit.orient == '-':
+            ref_seq = reverse_complement(ref_seq)
+            ref_idx = len(seq) - ref_idx
+            ref_idx = ref_idx[::-1]
+        return hits,ref_seq,ref_idx
+                
 
     def _count_cigar(self,cigar_string,c = 'M'):
         return sum([int(x) for x in re.findall(r'(\d+)%s'%(c),cigar_string)])
@@ -187,4 +209,7 @@ if __name__ == "__main__":
     hits = aln.align_seq(test_seqs[1]) #The position is the postiive start position in reference genome even for reverse complement alignment.
     print(scores)
     print(hits)
+    aln.ref_seq(test_seqs[1])
+    rev_seq = reverse_complement(aln.reference['bsubtilis1'][:100]+'ATACACACA')
+    aln.ref_seq(rev_seq)
     
