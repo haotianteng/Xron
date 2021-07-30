@@ -158,11 +158,16 @@ class MetricAligner(bwapy.BwaAligner):
         hits = self.align_seq(seq)
         if not hits:
             return None,None
-        cigar = hits[0]
-        deletions = self._count_cigar(cigar,'D')
-        insertions = self._count_cigar(cigar,'I')
-        matchs = self._count_cigar(cigar,'M')
+        hit = hits[0]
+        cigar = hit.cigar
+        n_deletion = self._count_cigar(cigar,'D')
+        n_insertion = self._count_cigar(cigar,'I')
+        n_match = self._count_cigar(cigar,'M')
         clips = re.findall(r'(\d+)S', cigar)
+        ref_len = n_match + n_deletion 
+        ref_seq = self.reference[hit.rname][hit.pos:hit.pos+ref_len]
+        increment = [int(x) for x in re.findall(r'(\d+)',cigar)]
+        operation = re.findall(r'[A-Za-z]',cigar)
 
     def _count_cigar(self,cigar_string,c = 'M'):
         return sum([int(x) for x in re.findall(r'(\d+)%s'%(c),cigar_string)])
