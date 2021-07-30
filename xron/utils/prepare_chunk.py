@@ -119,7 +119,10 @@ def extract(args):
                 mask = (ref_idx>=s)&(ref_idx<=e)
                 if sum(mask) > 0:
                     r_s,r_e = np.where(mask)[0][[0,-1]]
-                    seqs.append(ref_seq[r_s:r_e+1])
+                    seq = ref_seq[r_s:r_e+1]
+                    if args.mode == 'rna-meth':
+                        seq.replace('A','M')
+                    seqs.append(seq)
                 else:
                     seqs.append('')
         current_chunks = np.split(signal,np.arange(0,read_len,args.chunk_len))[1:]
