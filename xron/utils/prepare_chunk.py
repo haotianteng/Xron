@@ -100,7 +100,7 @@ def extract(args):
         signal = norm_by_noisiest_section(signal).astype(np.float16)
         if reverse_sig:
             signal = signal[::-1]
-        if args.extract_seq:    
+        if args.extract_seq: 
             seq, pos = retrive_seq(read_h['Analyses/Basecall_1D_%s'%(args.basecall_entry)],
                                    args.stride)
             seq = clean_repr(seq) #M->A, U->T
@@ -113,6 +113,8 @@ def extract(args):
             else:
                 signal = signal[start:]
             signal = signal[:len(pos)]
+            if len(signal) == 0:
+                continue
             read_len = len(pos)
             for x in np.arange(0,read_len,args.chunk_len):
                 s,e = pos[x:x+args.chunk_len][[0,-1]]
@@ -136,7 +138,7 @@ def extract(args):
     if args.extract_seq:
         seq_lens = [len(i) for i in seqs]
         pad = max(seq_lens)
-        seq_chunks = np.array([np.pad(i, ((0,pad-j),(0,0))) for i,j in zip(seqs,seq_lens)])
+        seq_chunks = np.array([np.pad(i, (0,pad-j),'constant',constant_values = (0,0)) for i,j in zip(seqs,seq_lens)])
         seq_lens = np.array(seq_lens)
         np.save(os.path.join(args.output,'seqs.npy'),seq_chunks)
         np.save(os.path.join(args.output,'seq_lens.npy'),seq_lens)
@@ -184,6 +186,7 @@ if __name__ == "__main__":
         if not FLAGS.reference:
             raise ValueError("Reference genome is required when extract the \
                              sequence.")
+    os.makedirs(FLAGS.output,exist_ok = True)
     extract(FLAGS)
-    if not os.path.isdir(FLAGS.output):
-        os.makedirs(FLAGS.output)
+
+
