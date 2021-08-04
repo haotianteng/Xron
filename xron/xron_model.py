@@ -34,7 +34,7 @@ class RNN_CONFIG(CNN_CONFIG):
 class FNN_CONFIG(RNN_CONFIG):
     FNN = {'N_Layer':2,
            'Layers':[{'out_features':32,'bias':True,'activation':'ReLU'},
-                     {'out_features':5,'bias':False,'activation':'Linear'}]}
+                     {'out_features':6,'bias':False,'activation':'Linear'}]}
     
 class CONFIG(FNN_CONFIG):
     pass
@@ -54,7 +54,7 @@ class DECODER_CONFIG(CONFIG):
 
 class MM_CONFIG(DECODER_CONFIG):
     PORE_MODEL = {"PORE_MODEL_F":PORE_MODEL_F,
-                  "N_BASE": 4,
+                  "N_BASE": 5,
                   "K" : 5}
     DECODER = {"X_UPSAMPLING":5, #The scale factor of upsampling.
                "USE_STD":False}
@@ -92,7 +92,7 @@ class CRNN(nn.Module):
                              in_channels = config.RNN['hidden_size']*directions)
         log_softmax = nn.LogSoftmax(dim = 2)
         self.net = nn.Sequential(*cnn,permute,*rnn,*fnn,log_softmax)
-        self.ctc = nn.CTCLoss()
+        self.ctc = nn.CTCLoss(zero_infinity = True)
         
     def _make_cnn(self,cnn_config,in_channels = 1):
         layers = []

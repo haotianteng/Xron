@@ -11,7 +11,7 @@ import torch.utils.data as data
 from torch.utils.data.dataloader import DataLoader
 
 from xron.xron_model import CRNN, CONFIG
-from xron.xron_input import Dataset, ToTensor, NumIndex, rnafilt, dnafilt
+from xron.xron_input import Dataset, ToTensor, NumIndex, rna_filt, dna_filt
 from xron.xron_train_base import Trainer, DeviceDataLoader, load_config
 
 class SupervisedTrainer(Trainer):
@@ -93,7 +93,7 @@ class SupervisedTrainer(Trainer):
         net = self.net
         signal_batch = batch['signal']
         out = net.forward(signal_batch)
-        out_len = np.array([out.shape[0]]*out.shape[1],dtype = np.int16)
+        out_len = np.array([out.shape[0]]*out.shape[1],dtype = np.int64)
         out_len = torch.from_numpy(out_len).to(self.device)
         seq = batch['seq']
         seq_len = batch['seq_len'].view(-1)
@@ -127,7 +127,11 @@ def main(args):
     ref_len = np.load(args.seq_len)
     print("Construct and load the model.")
     model_f = args.model_folder
-    chunks,reference,ref_len = rnafilt(chunks,reference,ref_len)
+    if config.CTC['mode'] == 'rna':
+        chunks,reference,ref_len = rna_filt(chunks,reference,ref_len)
+    elif config.CTC['mode'] == 'dna':
+        chunks,reference,ref_len = dna_filt(chunks,reference,ref_len)
+    ref_len = ref_len.astype(np.int64)
     if reference[0].dtype.kind in ['U','S']:
         alphabet_dict = {x:i+1 for i,x in enumerate(TRAIN_CONFIG.CTC['alphabeta'])}
         dataset = Dataset(chunks,seq = reference,seq_len = ref_len,transform = transforms.Compose([NumIndex(alphabet_dict),ToTensor()]))
@@ -180,4 +184,5 @@ if __name__ == "__main__":
     parser.add_argument('--config', default = None,
                         help = "Training configuration.")
     args = parser.parse_args(sys.argv[1:])
+    os.makedirs(args.model_folder,exist_ok=True)
     main(args)

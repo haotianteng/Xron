@@ -13,7 +13,7 @@ from matplotlib import pyplot as plt
 from typing import Dict,Callable
 from functools import partial
 
-RNA_FILTER_CONFIG = {"min_rate":3,
+RNA_FILTER_CONFIG = {"min_rate":6,
                      "min_seq_len":5}
 
 DNA_FILTER_CONFIG = {"min_rate":2,
@@ -63,14 +63,14 @@ class Dataset(data.Dataset):
             seq = np.array([x+'$'*(l_max-len(x)) for x in seq])
         self.chunks = chunks[:,None,:].astype(np.float32)
         if chunks_len is None:
-            self.chunks_len = np.array([[chunks.shape[1]]]*chunks.shape[0],dtype = np.int16)
+            self.chunks_len = np.array([[chunks.shape[1]]]*chunks.shape[0],dtype = np.int64)
         else:
-            self.chunks_len = chunks_len[:,None]
+            self.chunks_len = chunks_len[:,None].astype(np.int64)
         self.seq = seq
         if seq_len is not None:
-            self.seq_len = seq_len[:,None].astype(np.int16)
+            self.seq_len = seq_len[:,None].astype(np.int64)
         else:
-            self.seq_len = seq_len
+            self.seq_len = seq_len.astype(np.int64)
         assert(not (seq is None)^(seq_len is None) )
         self.transform = transform
                 
@@ -107,7 +107,7 @@ class NumIndex(object):
     def __call__(self,sample:Dict):
         seq = list(sample['seq'])
         seq = [self.alphabet_dict[x] for x in seq]
-        seq = np.array(seq,dtype = np.int)
+        seq = np.array(seq,dtype = np.long)
         return {key:value if key != 'seq' else seq for key, value in sample.items()}
 
 class ToTensor(object):
@@ -142,10 +142,10 @@ def filt(filt_config,chunks,seq,seq_len):
     return chunks[mask],seq[mask],seq_len[mask]
     
 def rna_filt(chunks,seq,seq_len):
-    return partial(filt,RNA_FILTER_CONFIG)
+    return partial(filt,RNA_FILTER_CONFIG)(chunks,seq,seq_len)
 
 def dna_filt(chunks,seq,seq_len):
-    return partial(filt,DNA_FILTER_CONFIG)
+    return partial(filt,DNA_FILTER_CONFIG)(chunks,seq,seq_len)
 
 if __name__ == "__main__":
     print("Load dataset.")
