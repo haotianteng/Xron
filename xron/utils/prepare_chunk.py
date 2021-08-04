@@ -132,15 +132,18 @@ def extract(args):
         current_chunks[-1]= np.pad(last_chunk,(0,args.chunk_len-len(last_chunk)),'constant',constant_values = (0,0))
         chunks += current_chunks
         meta_info += [(fast5_f,read_id)]*len(current_chunks)
+        if args.max_n and len(chunks)>args.max_n:
+            chunks = chunks[:args.max_n]
+            break
     chunks = np.stack(chunks,axis = 0)
     np.savetxt(os.path.join(args.output,'meta.csv'),meta_info,fmt="%s")
     np.save(os.path.join(args.output,'chunks.npy'),chunks)
     if args.extract_seq:
         seq_lens = [len(i) for i in seqs]
         pad = max(seq_lens)
-        seq_chunks = np.array([np.pad(i, (0,pad-j),'constant',constant_values = (0,0)) for i,j in zip(seqs,seq_lens)])
+        seqs = np.array(seqs)
         seq_lens = np.array(seq_lens)
-        np.save(os.path.join(args.output,'seqs.npy'),seq_chunks)
+        np.save(os.path.join(args.output,'seqs.npy'),seqs)
         np.save(os.path.join(args.output,'seq_lens.npy'),seq_lens)
 
 if __name__ == "__main__":
@@ -158,6 +161,10 @@ if __name__ == "__main__":
                         default = 4000,
                         type=int,
                         help="The lenght of the segment in chunk.")
+    parser.add_argument('--max_n',
+                        default = None,
+                        type=int,
+                        help="The maximum number of the segments to be extracted")
     parser.add_argument("--extract_seq",
                         action = "store_true",  
                         help = "If the sequence information is going to be\

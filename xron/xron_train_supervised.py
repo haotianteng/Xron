@@ -11,7 +11,7 @@ import torch.utils.data as data
 from torch.utils.data.dataloader import DataLoader
 
 from xron.xron_model import CRNN, CONFIG
-from xron.xron_input import Dataset, ToTensor
+from xron.xron_input import Dataset, ToTensor, NumIndex, rnafilt, dnafilt
 from xron.xron_train_base import Trainer, DeviceDataLoader, load_config
 
 class SupervisedTrainer(Trainer):
@@ -112,7 +112,8 @@ def main(args):
     class CTC_CONFIG(CONFIG):
         CTC = {"beam_size":5,
                "beam_cut_threshold":0.05,
-               "alphabeta": "ACGT"}
+               "alphabeta": "ACGTM",
+               "mode":"rna"}
     class TRAIN_CONFIG(CTC_CONFIG):
         TRAIN = {"inital_learning_rate":args.lr,
                  "batch_size":args.batch_size,
@@ -126,7 +127,12 @@ def main(args):
     ref_len = np.load(args.seq_len)
     print("Construct and load the model.")
     model_f = args.model_folder
-    dataset = Dataset(chunks,seq = reference,seq_len = ref_len,transform = transforms.Compose([ToTensor()]))
+    chunks,reference,ref_len = rnafilt(chunks,reference,ref_len)
+    if reference[0].dtype.kind in ['U','S']:
+        alphabet_dict = {x:i+1 for i,x in enumerate(TRAIN_CONFIG.CTC['alphabeta'])}
+        dataset = Dataset(chunks,seq = reference,seq_len = ref_len,transform = transforms.Compose([NumIndex(alphabet_dict),ToTensor()]))
+    else:
+        dataset = Dataset(chunks,seq = reference,seq_len = ref_len,transform = transforms.Compose([ToTensor()]))
     loader = data.DataLoader(dataset,batch_size = 200,shuffle = True, num_workers = 4)
     DEVICE = args.device
     loader = DeviceDataLoader(loader,device = DEVICE)
@@ -134,6 +140,8 @@ def main(args):
         config_old = load_config(os.path.join(model_f,"config.toml"))
         config_old.TRAIN = config.TRAIN #Overwrite training config.
         config = config_old
+    elif args.config:
+        config = load_config(args.config)
     net = CRNN(config)
     t = SupervisedTrainer(loader,net,config)
     if args.retrain:
@@ -169,5 +177,7 @@ if __name__ == "__main__":
                         help = "The interval of training rounds to report.")
     parser.add_argument('--load', dest='retrain', action='store_true',
                         help='Load existed model.')
+    parser.add_argument('--config', default = None,
+                        help = "Training configuration.")
     args = parser.parse_args(sys.argv[1:])
     main(args)
