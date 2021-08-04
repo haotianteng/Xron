@@ -110,6 +110,8 @@ def extract(args):
             start = int(read_h['Analyses/Segmentation_%s/Summary/segmentation'%(args.basecall_entry)].attrs['first_sample_template'])
             if reverse_sig:
                 signal = signal[:-start]
+                pos = pos[::-1]
+                pos = pos[0] - pos + 1
             else:
                 signal = signal[start:]
             signal = signal[:len(pos)]
