@@ -13,7 +13,7 @@ from matplotlib import pyplot as plt
 from typing import Dict,Callable
 from functools import partial
 
-RNA_FILTER_CONFIG = {"min_rate":6,
+RNA_FILTER_CONFIG = {"min_rate":8,
                      "min_seq_len":5}
 
 DNA_FILTER_CONFIG = {"min_rate":2,

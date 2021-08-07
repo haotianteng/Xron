@@ -62,13 +62,15 @@ class SupervisedTrainer(Trainer):
                 else:
                     calculate_error = False
                 loss,error = self.train_step(batch,get_error = calculate_error)
+                if not loss:
+                    continue
                 optimizer.zero_grad()
                 loss.backward()
                 if (i_batch+1)%save_cycle==0:
                     self.save()
                     eval_i,valid_batch = next(enumerate(self.eval_ds))
-                    valid_error = self.valid_step(valid_batch)
-                    print("Epoch %d Batch %d, loss %f, error %f, valid_error %f"%(epoch_i, i_batch, loss,np.mean(error),np.mean(valid_error)))
+                    valid_error,valid_perror = self.valid_step(valid_batch)
+                    print("Epoch %d Batch %d, loss %f, error %f, valid_error %f, reducting_error %f"%(epoch_i, i_batch, loss,np.mean(error),np.mean(valid_error),np.mean(valid_perror)))
                 torch.nn.utils.clip_grad_norm_(self.net.parameters(), 
                                                max_norm=self.grad_norm)
                 optimizer.step()
@@ -87,11 +89,21 @@ class SupervisedTrainer(Trainer):
                               alphabet = 'N' + self.config.CTC['alphabeta'],
                               beam_size = self.config.CTC['beam_size'],
                               beam_cut_threshold = self.config.CTC['beam_cut_threshold'])
-        return error
+        plain_error = net.ctc_error(out,
+                                    seq,
+                                    seq_len,
+                                    alphabet = 'N' + self.config.CTC['alphabeta'],
+                                    beam_size = self.config.CTC['beam_size'],
+                                    beam_cut_threshold = self.config.CTC['beam_cut_threshold'],
+                                    reduction = {'M':'A'})
+        return error,plain_error
 
     def train_step(self,batch,get_error = False):
         net = self.net
         signal_batch = batch['signal']
+        if torch.sum(torch.isnan(signal_batch)):
+            print("Found NaN input signal.")
+            return None,None
         out = net.forward(signal_batch)
         out_len = np.array([out.shape[0]]*out.shape[1],dtype = np.int64)
         out_len = torch.from_numpy(out_len).to(self.device)
@@ -110,7 +122,7 @@ class SupervisedTrainer(Trainer):
 
 def main(args):
     class CTC_CONFIG(CONFIG):
-        CTC = {"beam_size":5,
+        CTC = {"beam_size":1,
                "beam_cut_threshold":0.05,
                "alphabeta": "ACGTM",
                "mode":"rna"}

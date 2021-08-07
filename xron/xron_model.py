@@ -12,7 +12,7 @@ from functools import partial
 from itertools import permutations
 from fast_ctc_decode import beam_search, viterbi_search
 import editdistance
-from typing import List
+from typing import List,Dict
 
 ### Encoder Configuration
 module_dict = {'Res1d':xron.nn.Res1d,
@@ -214,7 +214,8 @@ class CRNN(nn.Module):
                   seqs_len:Tensor,
                   alphabet:str = "NACGT",
                   beam_size:int = 5,
-                  beam_cut_threshold:float = 0.05):
+                  beam_cut_threshold:float = 0.05,
+                  reduction:Dict = None):
         """
         Calcualte the CTC decoding error of the given posterior probability
         and sequence with true label.
@@ -238,18 +239,74 @@ class CRNN(nn.Module):
             The cut threshold of beam search, the higher it is, more search
             will done, too large the value could run out of search space of 
             beam search. The default is 0.05
+        reduction: dictionary, optional
+            Default is None, conduct no reduction, if a dict is provided, the
+            modifed bases will be reducted to original bases, e.g. {M:A} will
+            reduct M base back to A and then compare the error.
 
         Returns
         -------
         The average error.
 
         """
+        if torch.sum(torch.isnan(posteriors)):
+            print("Posterior has NaN in it.")
+            return np.nan
         preds = self.ctc_decode(posteriors = posteriors,
                                 alphabet=alphabet,
                                 beam_size=beam_size,
                                 beam_cut_threshold=beam_cut_threshold)
-        error = self.error(preds,seqs,seqs_len,alphabet = alphabet[1:])
+        if reduction:
+            error = self.reduction_error(preds, 
+                                         seqs, 
+                                         seqs_len,
+                                         alphabet = alphabet[1:],
+                                         modified_bases = reduction)
+        else:
+            error = self.error(preds,seqs,seqs_len,alphabet = alphabet[1:])
         return error
+    
+    def reduction_error(self,
+              predictions:List[np.ndarray],
+              seqs:Tensor,
+              seqs_len:Tensor,
+              modified_bases:Dict = {'M':'A'},
+              alphabet:str = "ACGTM"):
+        """
+        Calculate the ctc decoding error between the true label.
+
+        Parameters
+        ----------
+        predictions: List[np.ndarray]
+            A list of vectors, each vector is the predicting sequence.
+        seqs : Tensor
+            A N-L matrix contains the true sequence label.
+        seqs_len : Tensor
+            A N-1 vector contains the length of the sequences.
+        alphabet : str, optional
+            A string contains the alphabet without the blank symbol.
+            Can be a permutation of the alphabet used in ctc_decode.
+            The default is "ACGT".
+
+        Returns
+        -------
+        None.
+
+        """
+        batch_size = len(predictions)
+        seqs = seqs.cpu().detach().numpy()
+        seqs_len = seqs_len.cpu().detach().numpy().flatten()
+        errors = []
+        for i in np.arange(batch_size):
+            pred = predictions[i]
+            seq_len = seqs_len[i]
+            plain_seq = "".join([alphabet[x-1] for x in seqs[i][:seq_len]])
+            for key,val in modified_bases.items():
+                plain_seq.replace(key,val)
+                palin_pred = pred.replace(key,val)
+            error = editdistance.eval(palin_pred,plain_seq)
+            errors.append(error/seq_len)
+        return np.array(errors).mean()
     
     def permute_error(self,
                       posteriors:Tensor,
