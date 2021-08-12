@@ -55,6 +55,8 @@ class SupervisedTrainer(Trainer):
     def train(self,epoches,optimizer,save_cycle,save_folder):
         self.save_folder = save_folder
         self._save_config()
+        errors = []
+        losses = []
         for epoch_i in range(epoches):
             for i_batch, batch in enumerate(self.train_ds):
                 if (i_batch+1)%save_cycle==0:
@@ -62,12 +64,15 @@ class SupervisedTrainer(Trainer):
                 else:
                     calculate_error = False
                 loss,error = self.train_step(batch,get_error = calculate_error)
-                if not loss:
+                if torch.isnan(loss):
+                    print("NaN loss detected, skip this training step.")
                     continue
+                losses.append(loss)
+                errors.append(error)
                 optimizer.zero_grad()
                 loss.backward()
                 if (i_batch+1)%save_cycle==0:
-                    self.save()
+                    self.save(losses,errors)
                     eval_i,valid_batch = next(enumerate(self.eval_ds))
                     valid_error,valid_perror = self.valid_step(valid_batch)
                     print("Epoch %d Batch %d, loss %f, error %f, valid_error %f, reducting_error %f"%(epoch_i, i_batch, loss,np.mean(error),np.mean(valid_error),np.mean(valid_perror)))
@@ -122,7 +127,7 @@ class SupervisedTrainer(Trainer):
 
 def main(args):
     class CTC_CONFIG(CONFIG):
-        CTC = {"beam_size":1,
+        CTC = {"beam_size":5,
                "beam_cut_threshold":0.05,
                "alphabeta": "ACGTM",
                "mode":"rna"}

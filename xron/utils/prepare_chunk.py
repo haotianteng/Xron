@@ -136,13 +136,13 @@ def extract(args):
         meta_info += [(fast5_f,read_id)]*len(current_chunks)
         if args.max_n and len(chunks)>args.max_n:
             chunks = chunks[:args.max_n]
+            seqs = seqs[:args.max_n]
             break
     chunks = np.stack(chunks,axis = 0)
     np.savetxt(os.path.join(args.output,'meta.csv'),meta_info,fmt="%s")
     np.save(os.path.join(args.output,'chunks.npy'),chunks)
     if args.extract_seq:
         seq_lens = [len(i) for i in seqs]
-        pad = max(seq_lens)
         seqs = np.array(seqs)
         seq_lens = np.array(seq_lens)
         np.save(os.path.join(args.output,'seqs.npy'),seqs)

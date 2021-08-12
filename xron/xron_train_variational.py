@@ -13,7 +13,7 @@ import torch.utils.data as data
 from torch.utils.data.dataloader import DataLoader
 from xron.xron_input import Dataset, ToTensor
 from xron.xron_train_base import Trainer, DeviceDataLoader, load_config
-from xron.xron_model import REVCNN,DECODER_CONFIG,CRNN,MM_CONFIG,MM
+from xron.xron_model import REVCNN,DECODER_CONFIG,CRNN,MM_CONFIG,MM,CRITIC_CONFIG
 from xron.xron_label import MetricAligner
 from torch.distributions.one_hot_categorical import OneHotCategorical as OHC
 
@@ -21,6 +21,7 @@ class VAETrainer(Trainer):
     def __init__(self,
                  train_dataloader:DataLoader,
                  encoder:CRNN,
+                 critic:CRNN,
                  decoder:REVCNN,
                  mm:MM,
                  config:Union[DECODER_CONFIG,MM_CONFIG],
@@ -35,6 +36,8 @@ class VAETrainer(Trainer):
             Training dataloader.
         encoder: CRNN
             A Convolutional-Recurrent Neural Network
+        critic: CRNN
+            A critic network with the same structure as the encoder.
         decoder : REVCNN
             REVCNN decoder
         mm: MM
@@ -53,20 +56,17 @@ class VAETrainer(Trainer):
         """
         super().__init__(train_dataloader=train_dataloader,
                          nets = {"encoder":encoder,
+                                 "critic":encoder,
                                  "decoder":decoder,
                                  "mm":mm},
                          config = config,
                          device = device,
                          eval_dataloader = eval_dataloader)
         self.encoder = encoder
+        self.critic = critic
         self.decoder = decoder
         self.mm = mm
         self.aligner = aligner
-        params = [encoder.parameters(),decoder.parameters(),mm.parameters()]
-        d_params = [decoder.parameters(),mm.parameters()]
-        self.decoder_parameters = chain(*d_params)
-        self.encoder_parameters = encoder.parameters()
-        self.parameters = chain(*params)
         self.train_config = config.TRAIN
         
         self.decay = self.train_config["decay"]
@@ -78,11 +78,7 @@ class VAETrainer(Trainer):
                         'entropy_losses':[],
                         'alignment_score':[],
                         'valid_alignment':[]}
-    def _clear_grad(self):
-        self.encoder.zero_grad()
-        self.decoder.zero_grad()
-        self.mm.zero_grad()
-
+        
     def train(self,
               epoches:int,
               optimizers:List[torch.optim.Optimizer],
@@ -117,7 +113,7 @@ class VAETrainer(Trainer):
         alpha = self.train_config["alpha"]
         beta = self.train_config["beta"]
         gamma = self.train_config["gamma"]
-        opt_e,opt_g,opt_d = optimizers
+        opt_e,opt_c,opt_g,opt_d = optimizers
         for epoch_i in range(epoches):
             for i_batch, batch in enumerate(self.train_ds):
                 if self.global_step < preheat:
@@ -125,12 +121,16 @@ class VAETrainer(Trainer):
                 else:
                     self.epsilon = max(1+(self.global_step - preheat)*e_decay,epsilon)
                 losses = self.train_step(batch)
-                opt_g.zero_grad()
+                opt_c.zero_grad()
                 losses[-1].backward()
+                opt_c.step()
+                losses = self.train_step(batch)
+                opt_g.zero_grad()
+                losses[-2].backward()
                 opt_g.step()
                 losses = self.train_step(batch)
                 opt_d.zero_grad()
-                losses[-2].backward()
+                losses[-3].backward()
                 opt_d.step()
                 losses = self.train_step(batch)
                 loss = -alpha*losses[0]+beta*losses[1]+gamma*losses[2] #Maximize -H(q), minimize -(cross entropy loss)
@@ -154,10 +154,12 @@ class VAETrainer(Trainer):
         
     def train_step(self,batch):
         encoder = self.encoder
+        critic = self.critic
         decoder = self.decoder
         mm = self.mm
         signal = batch['signal']
         logprob = encoder.forward(signal) #[L,N,C]
+        mse_predict = torch.min(critic.forward(signal),dim = 2,keepdim = True).permute(1,2,0) #[L,N,C] -> [N,C,L]
         if np.random.rand()<self.epsilon:
             m = OHC(logits = logprob)
             sampling = m.sample().permute([1,2,0]) #[L,N,C]->[N,C,L]
@@ -171,8 +173,9 @@ class VAETrainer(Trainer):
         mse_mm = decoder.mse_loss(rc_mm,signal)
         entropy_loss = decoder.entropy_loss(logprob.permute([1,2,0]),sampling.max(dim = 1)[1])
         raw_seq = torch.argmax(sampling,dim = 1)
+        critic_loss = torch.mean(critic.mse_loss(mse_combine,mse_predict))
         sample_logprob = torch.sum(logprob.permute([1,2,0])*sampling,axis = (1,2))
-        rc_loss = torch.mean(torch.mean(mse_combine,axis = (1,2))*sample_logprob)
+        rc_loss = torch.mean(torch.mean(mse_combine - mse_predict,axis = (1,2))*sample_logprob)
         decoder_loss_combine = torch.mean(mse_combine)
         decoder_loss_mm = torch.mean(mse_mm)
 
@@ -185,7 +188,7 @@ class VAETrainer(Trainer):
         # score = torch.from_numpy(identities[best_perm]-self.score_average).to(self.device)
         # self.score_average  = self.score_average * self.decay + (1-self.decay)* np.mean(identities[best_perm])
         # return entropy_loss,rc_loss, torch.mean(-score*sample_logprob)
-        return entropy_loss, rc_loss, torch.zeros(1).to(self.device),decoder_loss_combine,decoder_loss_mm #Hack the alignment loss out
+        return entropy_loss, rc_loss, torch.zeros(1).to(self.device),decoder_loss_combine,decoder_loss_mm,critic_loss #Hack the alignment loss out
     
     def valid_step(self,batch):
         net = self.encoder
@@ -227,6 +230,7 @@ def main(args):
                  "decay":args.decay,}
         
     config = TRAIN_CONFIG()
+    critic_config = CRITIC_CONFIG()
     print("Read chunks and sequence.")
     chunks = np.load(args.chunks,allow_pickle = True)
     print(chunks.shape)
@@ -243,20 +247,22 @@ def main(args):
         config_old.TRAIN = config.TRAIN #Overwrite training config.
         config = config_old
     encoder = CRNN(config)
+    critic = CRNN(critic_config)
     decoder = REVCNN(config)
     mm = MM(config)
     aligner = MetricAligner(args.reference)
-    t = VAETrainer(loader,encoder,decoder,mm,config,aligner)
+    t = VAETrainer(loader,encoder,critic,decoder,mm,config,aligner)
     if args.retrain:
         t.load(model_f)
     lr = args.lr
     epoches = args.epoches
-    opt_e = torch.optim.Adam(t.encoder_parameters,lr = lr)
+    opt_e = torch.optim.Adam(t.encoder.parameters(),lr = lr)
+    opt_c = torch.optim.Adam(t.critic.parameters(),lr = lr)
     opt_mm = torch.optim.SGD(t.mm.parameters(),lr = lr)
     opt_revcnn = torch.optim.Adam(t.decoder.parameters(),lr = lr)
     COUNT_CYCLE = args.report
     print("Begin training the model.")
-    t.train(epoches,[opt_e,opt_mm,opt_revcnn],COUNT_CYCLE,model_f)
+    t.train(epoches,[opt_e,opt_c,opt_mm,opt_revcnn],COUNT_CYCLE,model_f)
     
         
         
