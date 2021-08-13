@@ -13,8 +13,8 @@ from matplotlib import pyplot as plt
 from typing import Dict,Callable
 from functools import partial
 
-RNA_FILTER_CONFIG = {"min_rate":8,
-                     "min_seq_len":5}
+RNA_FILTER_CONFIG = {"min_rate":10,
+                     "min_seq_len":100}
 
 DNA_FILTER_CONFIG = {"min_rate":2,
                      "min_seq_len":7}
@@ -137,8 +137,10 @@ def show_sample(sample:Dict, idx = 0):
 
 def filt(filt_config,chunks,seq,seq_len):
     segment_len = chunks.shape[1]
+    print("Origin %d chunks in total."%(chunks.shape))
     max_seq_len = np.int(segment_len/filt_config['min_rate'])
     mask = np.logical_and(seq_len>filt_config["min_seq_len"],seq_len<max_seq_len)
+    print("%d chunks after filtering."%(sum(mask)))
     return chunks[mask],seq[mask],seq_len[mask]
     
 def rna_filt(chunks,seq,seq_len):

@@ -21,23 +21,40 @@ module_dict = {'Res1d':xron.nn.Res1d,
                'ReLU':nn.ReLU,
                'Sigmoid':nn.Sigmoid}
 PORE_MODEL_F = "pore_models/5mer_level_table.model"
+N_BASE = 5 #AGCTM
 class CNN_CONFIG(object):
     CNN = {'N_Layer':3,
-           'Layers': [{'layer_type':'Res1d','kernel_size':5,'stride':1,'out_channels':32},
-                      {'layer_type':'Res1d','kernel_size':5,'stride':1,'out_channels':32},
-                      {'layer_type':'Res1d','kernel_size':15,'stride':5,'out_channels':64}]
+           'Layers': [{'layer_type':'Res1d','kernel_size':5,'stride':1,'out_channels':4},
+                      {'layer_type':'Res1d','kernel_size':5,'stride':1,'out_channels':16},
+                      {'layer_type':'Res1d','kernel_size':19,'stride':5,'out_channels':768}]
         }
-
 class RNN_CONFIG(CNN_CONFIG):
-    RNN = {'layer_type':'BidirectionalRNN','hidden_size':64,'cell_type':'LSTM','num_layers':3}
+    RNN = {'layer_type':'BidirectionalRNN','hidden_size':768,'cell_type':'LSTM','num_layers':3}
 
 class FNN_CONFIG(RNN_CONFIG):
     FNN = {'N_Layer':2,
-           'Layers':[{'out_features':32,'bias':True,'activation':'ReLU'},
-                     {'out_features':6,'bias':False,'activation':'Linear'}]}
-    
+           'Layers':[{'out_features':32,'bias':True,'activation':'Sigmoid'},
+                     {'out_features':N_BASE+1,'bias':True,'activation':'Linear'}]}
 class CONFIG(FNN_CONFIG):
     pass
+
+### Critic Configuration
+class CRITIC_CNN(object):
+    CNN = {'N_Layer':3,
+           'Layers': [{'layer_type':'Res1d','kernel_size':5,'stride':1,'out_channels':32},
+                      {'layer_type':'Res1d','kernel_size':5,'stride':1,'out_channels':32},
+                      {'layer_type':'Res1d','kernel_size':5,'stride':1,'out_channels':32}]
+        }
+
+class CRITIC_RNN(CRITIC_CNN):
+    RNN = {'layer_type':'BidirectionalRNN','hidden_size':64,'cell_type':'LSTM','num_layers':3}
+class CRITIC_FNN(CRITIC_RNN):
+    FNN = {'N_Layer':2,
+           'Layers':[{'out_features':32,'bias':True,'activation':'ReLU'},
+                     {'out_features':N_BASE+1,'bias':False,'activation':'Linear'}]}
+class CRITIC_CONFIG(CRITIC_FNN):
+    pass
+
 
 ### Decoder configuration
 module_dict['RevRes1d'] = xron.nn.RevRes1d
@@ -68,6 +85,59 @@ def copy_config(config):
        setattr(config_copy,module,deepcopy(getattr(config,module)))
     return config_copy
 
+class CRITIC(nn.Module):
+    def __init__(self,config:CONFIG):
+        """
+        A Convolutional-Recurrent neural network for encoding the signal into
+        base probability.
+
+        Parameters
+        ----------
+        config : CONFIG
+            The configuration used to generate the net, need to contain CNN,
+            RNN and FNN attributes.
+        """
+        super().__init__()
+        self.config = copy_config(config)
+        config = copy_config(self.config)
+        cnn = self._make_cnn(config.CNN)
+        permute = xron.nn.Permute([2,0,1]) #[N,C,L] -> [L,N,C]
+        rnn = self._make_rnn(config.RNN,
+                             in_channels = config.CNN['Layers'][-1]['out_channels'])
+        directions = 2 if self.config.RNN['layer_type'] == "BidirectionalRNN" else 1
+        fnn = self._make_fnn(config.FNN.copy(),
+                             in_channels = config.RNN['hidden_size']*directions)
+        self.net = nn.Sequential(*cnn,permute,*rnn,*fnn)
+        self.mse_loss = nn.MSELoss(reduction = "mean")
+        
+    def _make_cnn(self,cnn_config,in_channels = 1):
+        layers = []
+        for l in cnn_config['Layers']:
+            block = module_dict[l.pop('layer_type')]
+            layers.append(block(in_channels = in_channels,**l))
+            in_channels = l['out_channels']
+        return layers
+    
+    def _make_rnn(self,rnn_config,in_channels):
+        block = module_dict[rnn_config.pop('layer_type')]
+        cell = module_dict[rnn_config.pop('cell_type')]
+        return [block(input_size = in_channels,
+                            cell = cell,
+                            **rnn_config)]
+    
+    def _make_fnn(self,fnn_config,in_channels):
+        layers = []
+        for l in fnn_config['Layers']:
+            activation = l.pop('activation')
+            layers.append(nn.Linear(in_features = in_channels,**l))
+            if activation != 'Linear':
+                layers.append(module_dict[activation]())
+            in_channels = l['out_features']
+        return layers
+        
+    def forward(self,batch):
+        return self.net(batch)
+
 class CRNN(nn.Module):
     def __init__(self,config:CONFIG):
         """
@@ -92,7 +162,7 @@ class CRNN(nn.Module):
                              in_channels = config.RNN['hidden_size']*directions)
         log_softmax = nn.LogSoftmax(dim = 2)
         self.net = nn.Sequential(*cnn,permute,*rnn,*fnn,log_softmax)
-        self.ctc = nn.CTCLoss(zero_infinity = True)
+        self.ctc = nn.CTCLoss(zero_infinity = False)
         
     def _make_cnn(self,cnn_config,in_channels = 1):
         layers = []

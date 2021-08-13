@@ -169,7 +169,7 @@ def main(args):
         t.load(model_f)
     lr = args.lr
     epoches = args.epoches
-    optimizer = torch.optim.Adam(net.parameters(),lr = lr)
+    optimizer = torch.optim.AdamW(net.parameters(),lr = lr)
     COUNT_CYCLE = args.report
     print("Begin training the model.")
     t.train(epoches,optimizer,COUNT_CYCLE,model_f)
