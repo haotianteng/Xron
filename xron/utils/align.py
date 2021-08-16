@@ -182,7 +182,11 @@ class MetricAligner(bwapy.BwaAligner):
             elif op == "I":
                 curr_query += inc
             elif op == "D":
-                ref_idx[curr:curr+inc] = curr
+                if inc <= 1:
+                    ref_idx[curr:curr+inc] = curr_query
+                else:
+                    ref_idx[curr:curr+inc//2] = curr_query-1
+                    ref_idx[curr+inc//2:curr+inc] = curr_query
                 curr += inc
         if hit.orient == '-':
             ref_seq = reverse_complement(ref_seq)

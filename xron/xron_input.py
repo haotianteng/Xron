@@ -137,7 +137,7 @@ def show_sample(sample:Dict, idx = 0):
 
 def filt(filt_config,chunks,seq,seq_len):
     segment_len = chunks.shape[1]
-    print("Origin %d chunks in total."%(chunks.shape))
+    print("Origin %d chunks in total."%(chunks.shape[0]))
     max_seq_len = np.int(segment_len/filt_config['min_rate'])
     mask = np.logical_and(seq_len>filt_config["min_seq_len"],seq_len<max_seq_len)
     print("%d chunks after filtering."%(sum(mask)))

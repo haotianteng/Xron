@@ -79,7 +79,7 @@ def norm_by_noisiest_section(signal, samples=100, threshold=6.0):
 def retrive_seq(seq_h,event_stride):
     moves = np.asarray(seq_h['BaseCalled_template']['Move'])
     seq = np.asarray(seq_h['BaseCalled_template']['Fastq']).tobytes().decode('utf-8').split('\n')[1]
-    pos = np.repeat(np.cumsum(moves)-1,repeats = event_stride)
+    pos = np.repeat(np.cumsum(moves)-1,repeats = event_stride).astype(np.int32)
     return seq,pos
     
 
@@ -107,23 +107,27 @@ def extract(args):
             hits,ref_seq,ref_idx = aligner.ref_seq(seq)
             if not hits:
                 continue
+            assert np.all(np.diff(ref_idx)>=0)
             start = int(read_h['Analyses/Segmentation_%s/Summary/segmentation'%(args.basecall_entry)].attrs['first_sample_template'])
             if reverse_sig:
                 signal = signal[:-start]
                 pos = pos[::-1]
-                pos = pos[0] - pos + 1
+                pos = pos[0] - pos 
             else:
                 signal = signal[start:]
             signal = signal[:len(pos)]
             if len(signal) == 0:
                 continue
             read_len = len(pos)
+            # basecall_seq = seq
             for x in np.arange(0,read_len,args.chunk_len):
                 s,e = pos[x:x+args.chunk_len][[0,-1]]
                 mask = (ref_idx>=s)&(ref_idx<=e)
                 if sum(mask) > 0:
                     r_s,r_e = np.where(mask)[0][[0,-1]]
+                    # print("Basecall sequence:%s"%(basecall_seq[s:e+1]))
                     seq = ref_seq[r_s:r_e+1]
+                    # print("Aligned seqeuence:%s"%(seq))
                     if args.mode == 'rna-meth':
                         seq.replace('A','M')
                     seqs.append(seq)
@@ -133,10 +137,11 @@ def extract(args):
         last_chunk = current_chunks[-1]
         current_chunks[-1]= np.pad(last_chunk,(0,args.chunk_len-len(last_chunk)),'constant',constant_values = (0,0))
         chunks += current_chunks
-        meta_info += [(fast5_f,read_id)]*len(current_chunks)
+        meta_info += [(fast5_f,read_id,str(args.chunk_len),str(args.stride))]*len(current_chunks)
         if args.max_n and len(chunks)>args.max_n:
             chunks = chunks[:args.max_n]
             seqs = seqs[:args.max_n]
+            meta_info = meta_info[:args.max_n]
             break
     chunks = np.stack(chunks,axis = 0)
     np.savetxt(os.path.join(args.output,'meta.csv'),meta_info,fmt="%s")
