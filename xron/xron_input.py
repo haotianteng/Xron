@@ -14,7 +14,7 @@ from typing import Dict,Callable
 from functools import partial
 
 RNA_FILTER_CONFIG = {"min_rate":10,
-                     "min_seq_len":100}
+                     "min_seq_len":5}
 
 DNA_FILTER_CONFIG = {"min_rate":2,
                      "min_seq_len":7}

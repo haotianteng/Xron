@@ -268,7 +268,7 @@ def main(args):
         
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description='Training model with tfrecord file')
+        description='Training model with chunks and sequence file')
     parser.add_argument('-i', '--chunks', required = True,
                         help = "The .npy file contain chunks.")
     parser.add_argument('-o', '--model_folder', required = True,
