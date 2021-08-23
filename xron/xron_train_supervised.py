@@ -55,8 +55,6 @@ class SupervisedTrainer(Trainer):
     def train(self,epoches,optimizer,save_cycle,save_folder):
         self.save_folder = save_folder
         self._save_config()
-        errors = []
-        losses = []
         for epoch_i in range(epoches):
             for i_batch, batch in enumerate(self.train_ds):
                 if (i_batch+1)%save_cycle==0:
@@ -67,12 +65,12 @@ class SupervisedTrainer(Trainer):
                 if torch.isnan(loss):
                     print("NaN loss detected, skip this training step.")
                     continue
-                losses.append(loss)
-                errors.append(error)
+                self.losses.append(loss)
+                self.errors.append(error)
                 optimizer.zero_grad()
                 loss.backward()
                 if (i_batch+1)%save_cycle==0:
-                    self.save(losses,errors)
+                    self.save()
                     eval_i,valid_batch = next(enumerate(self.eval_ds))
                     valid_error,valid_perror = self.valid_step(valid_batch)
                     print("Epoch %d Batch %d, loss %f, error %f, valid_error %f, reducting_error %f"%(epoch_i, i_batch, loss,np.mean(error),np.mean(valid_error),np.mean(valid_perror)))
@@ -136,7 +134,10 @@ def main(args):
                  "batch_size":args.batch_size,
                  "grad_norm":2,
                  "keep_record":5}
-        
+    optimizers = {'Adam':torch.optim.Adam,
+                  'AdamW':torch.optim.AdamW,
+                  'SGD':torch.optim.SGD,
+                  'RMSprop':torch.optim.RMSprop}
     config = TRAIN_CONFIG()
     print("Read chunks and sequence.")
     chunks = np.load(args.chunks)
@@ -154,7 +155,7 @@ def main(args):
         dataset = Dataset(chunks,seq = reference,seq_len = ref_len,transform = transforms.Compose([NumIndex(alphabet_dict),ToTensor()]))
     else:
         dataset = Dataset(chunks,seq = reference,seq_len = ref_len,transform = transforms.Compose([ToTensor()]))
-    loader = data.DataLoader(dataset,batch_size = 200,shuffle = True, num_workers = 4)
+    loader = data.DataLoader(dataset,batch_size = config.TRAIN['batch_size'],shuffle = True, num_workers = 4)
     DEVICE = args.device
     loader = DeviceDataLoader(loader,device = DEVICE)
     if args.retrain:
@@ -169,10 +170,10 @@ def main(args):
         t.load(model_f)
     lr = args.lr
     epoches = args.epoches
-    optimizer = torch.optim.AdamW(net.parameters(),lr = lr)
+    optim = optimizers[args.optimizer](net.parameters(),lr = lr)
     COUNT_CYCLE = args.report
     print("Begin training the model.")
-    t.train(epoches,optimizer,COUNT_CYCLE,model_f)
+    t.train(epoches,optim,COUNT_CYCLE,model_f)
     
     
 if __name__ == "__main__":
@@ -200,6 +201,9 @@ if __name__ == "__main__":
                         help='Load existed model.')
     parser.add_argument('--config', default = None,
                         help = "Training configuration.")
+    parser.add_argument('--optimizer', default = "RMSprop",
+                        help = "Optimizer to use, can be Adam, AdamW, SGD and RMSprop,\
+                            default is RMSprop")
     args = parser.parse_args(sys.argv[1:])
     os.makedirs(args.model_folder,exist_ok=True)
     main(args)

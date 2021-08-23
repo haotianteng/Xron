@@ -6,11 +6,11 @@ Created on Thu Mar 11 16:07:12 2021
 import os
 import toml
 import torch
-from typing import Union,Dict,List
+import numpy as np
+from typing import Union,Dict
 from torch.utils.data.dataloader import DataLoader
 from xron.xron_model import CRNN, REVCNN, CONFIG,DECODER_CONFIG,MM
-from matplotlib import pyplot as plt
-import numpy as np
+
 
 class Trainer(object):
     def __init__(self,
@@ -56,6 +56,8 @@ class Trainer(object):
         self.keep_record = config.TRAIN['keep_record']
         self.grad_norm = config.TRAIN['grad_norm']
         self.config = config
+        self.losses = []
+        self.errors = []
     
     def _get_device(self,device):
         if device is None:
@@ -71,10 +73,12 @@ class Trainer(object):
         with open(record_file,'w+') as f:
             toml.dump(self.records,f)
 
-    def save(self,losses:List[float] = None, errors:List[float] = None):
+    def save(self):
         ckpt_file = os.path.join(self.save_folder,'checkpoint')
         current_ckpt = 'ckpt-'+str(self.global_step)
         model_file = os.path.join(self.save_folder,current_ckpt)
+        loss_file = os.path.join(self.save_folder,'losses.csv')
+        error_file = os.path.join(self.save_folder,'errors.csv')
         self.save_list.append(current_ckpt)
         if not os.path.isdir(self.save_folder):
             os.mkdir(self.save_folder)
@@ -87,16 +91,11 @@ class Trainer(object):
                 f.write("checkpoint file:" + path + '\n')
         net_dict = {key:net.state_dict() for key,net in self.nets.items()}
         torch.save(net_dict,model_file)
-        if losses:
-            plt.plot(np.arange(len(losses)),losses)
-            plt.xlabel("Trian step")
-            plt.ylabel("Loss")
-            plt.savefig(os.path.join(self.save_folder,'losses.png'))
-        if errors:
-            plt.plot(np.arange(len(errors)),errors)
-            plt.xlabel("Trian step")
-            plt.ylabel("Error")
-            plt.savefig(os.path.join(self.save_folder,'errors.png'))
+        if len(self.losses):
+            np.savetxt(loss_file,np.asarray(self.losses,dtype = np.float),delimiter = ",")
+        if len(self.errors):
+            np.savetxt(error_file,np.asarray(self.errors,dtype = np.float),delimiter = ",")
+    
     def _save_config(self):
         config_file = os.path.join(self.save_folder,'config.toml')
         config_modules = [x for x in self.config.__dir__() if not x .startswith('_')][::-1]
