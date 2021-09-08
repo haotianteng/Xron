@@ -75,13 +75,6 @@ class Trainer(object):
 
     def save(self):
         ckpt_file = os.path.join(self.save_folder,'checkpoint')
-        if os.path.isfile(ckpt_file):
-            with open(ckpt_file,'r') as f:
-                f.read()
-                for line in f:
-                    ckpt = line.strip().split(':')
-                    if ckpt[0].startswith("checkpoint"):
-                        self.save_list.append(ckpt)
         current_ckpt = 'ckpt-'+str(self.global_step)
         model_file = os.path.join(self.save_folder,current_ckpt)
         self.save_list.append(current_ckpt)
