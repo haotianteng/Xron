@@ -75,26 +75,43 @@ class Trainer(object):
 
     def save(self):
         ckpt_file = os.path.join(self.save_folder,'checkpoint')
+        if os.path.isfile(ckpt_file):
+            with open(ckpt_file,'r') as f:
+                f.read()
+                for line in f:
+                    ckpt = line.strip().split(':')
+                    if ckpt[0].startswith("checkpoint"):
+                        self.save_list.append(ckpt)
         current_ckpt = 'ckpt-'+str(self.global_step)
         model_file = os.path.join(self.save_folder,current_ckpt)
-        loss_file = os.path.join(self.save_folder,'losses.csv')
-        error_file = os.path.join(self.save_folder,'errors.csv')
         self.save_list.append(current_ckpt)
         if not os.path.isdir(self.save_folder):
             os.mkdir(self.save_folder)
         if len(self.save_list) > self.keep_record:
             os.remove(os.path.join(self.save_folder,self.save_list[0]))
             self.save_list = self.save_list[1:]
+        if os.path.isfile(model_file):
+            os.remove(model_file)
         with open(ckpt_file,'w+') as f:
             f.write("latest checkpoint:" + current_ckpt + '\n')
             for path in self.save_list:
                 f.write("checkpoint file:" + path + '\n')
         net_dict = {key:net.state_dict() for key,net in self.nets.items()}
         torch.save(net_dict,model_file)
+    
+    def save_loss(self):
+        loss_file = os.path.join(self.save_folder,'losses.csv')
+        error_file = os.path.join(self.save_folder,'errors.csv')
         if len(self.losses):
-            np.savetxt(loss_file,np.asarray(self.losses,dtype = np.float),delimiter = ",")
+            with open(loss_file,'a+') as f:
+                f.write('\n'.join([str(x) for x in self.losses]))
+                f.write('\n')
         if len(self.errors):
-            np.savetxt(error_file,np.asarray(self.errors,dtype = np.float),delimiter = ",")
+            with open(error_file,'a+') as f:
+                f.write('\n'.join([str(x) for x in self.errors]))
+                f.write('\n')
+        self.losses = []
+        self.errors = []
     
     def _save_config(self):
         config_file = os.path.join(self.save_folder,'config.toml')

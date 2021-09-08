@@ -3,13 +3,14 @@
 """
 import os 
 import sys
+from tqdm import tqdm
 import torch
 import argparse
 import numpy as np
 from torchvision import transforms
 import torch.utils.data as data
 from torch.utils.data.dataloader import DataLoader
-
+from functools import partial
 from xron.xron_model import CRNN, CONFIG
 from xron.xron_input import Dataset, ToTensor, NumIndex, rna_filt, dna_filt
 from xron.xron_train_base import Trainer, DeviceDataLoader, load_config
@@ -65,19 +66,21 @@ class SupervisedTrainer(Trainer):
                 if torch.isnan(loss):
                     print("NaN loss detected, skip this training step.")
                     continue
-                self.losses.append(loss)
-                self.errors.append(error)
                 optimizer.zero_grad()
                 loss.backward()
-                if (i_batch+1)%save_cycle==0:
-                    self.save()
-                    eval_i,valid_batch = next(enumerate(self.eval_ds))
-                    valid_error,valid_perror = self.valid_step(valid_batch)
-                    print("Epoch %d Batch %d, loss %f, error %f, valid_error %f, reducting_error %f"%(epoch_i, i_batch, loss,np.mean(error),np.mean(valid_error),np.mean(valid_perror)))
                 torch.nn.utils.clip_grad_norm_(self.net.parameters(), 
                                                max_norm=self.grad_norm)
                 optimizer.step()
+                self.losses.append(loss.item())
                 self.global_step +=1
+                if (i_batch+1)%save_cycle==0:
+                    self.save()
+                    with torch.set_grad_enabled(False):
+                        eval_i,valid_batch = next(enumerate(self.eval_ds))
+                        valid_error,valid_perror = self.valid_step(valid_batch)
+                        self.errors.append(valid_error)
+                        print("Epoch %d: Batch %d, loss %f, error %f valid_error %f, reducting_error %f"%(epoch_i, i_batch, loss,error, np.mean(valid_error),np.mean(valid_perror)))
+                    self.save_loss()
                 
     def valid_step(self,batch):
         net = self.net
@@ -124,6 +127,14 @@ class SupervisedTrainer(Trainer):
         return loss,error
 
 def main(args):
+    if args.threads:
+        torch.set_num_threads(args.threads)
+    optimizers = {'Adam':torch.optim.Adam,
+                  'AdamW':torch.optim.AdamW,
+                  'SGD':torch.optim.SGD,
+                  'RMSprop':torch.optim.RMSprop,
+                  'Adagrad':torch.optim.Adagrad,
+                  'Momentum':partial(torch.optim.SGD,momentum = 0.9)}
     class CTC_CONFIG(CONFIG):
         CTC = {"beam_size":5,
                "beam_cut_threshold":0.05,
@@ -133,11 +144,9 @@ def main(args):
         TRAIN = {"inital_learning_rate":args.lr,
                  "batch_size":args.batch_size,
                  "grad_norm":2,
-                 "keep_record":5}
-    optimizers = {'Adam':torch.optim.Adam,
-                  'AdamW':torch.optim.AdamW,
-                  'SGD':torch.optim.SGD,
-                  'RMSprop':torch.optim.RMSprop}
+                 "keep_record":5,
+                 "eval_size":100000,
+                 "optimizer":optimizers[args.optimizer]}
     config = TRAIN_CONFIG()
     print("Read chunks and sequence.")
     chunks = np.load(args.chunks)
@@ -145,6 +154,12 @@ def main(args):
     ref_len = np.load(args.seq_len)
     print("Construct and load the model.")
     model_f = args.model_folder
+    if args.retrain:
+        config_old = load_config(os.path.join(model_f,"config.toml"))
+        config_old.TRAIN = config.TRAIN #Overwrite training config.
+        config = config_old
+    elif args.config:
+        config = load_config(args.config)
     if config.CTC['mode'] == 'rna':
         chunks,reference,ref_len = rna_filt(chunks,reference,ref_len)
     elif config.CTC['mode'] == 'dna':
@@ -155,22 +170,21 @@ def main(args):
         dataset = Dataset(chunks,seq = reference,seq_len = ref_len,transform = transforms.Compose([NumIndex(alphabet_dict),ToTensor()]))
     else:
         dataset = Dataset(chunks,seq = reference,seq_len = ref_len,transform = transforms.Compose([ToTensor()]))
-    loader = data.DataLoader(dataset,batch_size = config.TRAIN['batch_size'],shuffle = True, num_workers = 4)
+    eval_size = config.TRAIN['eval_size']
+    dataset,eval_ds = torch.utils.data.random_split(dataset,[len(dataset) - eval_size, eval_size], generator=torch.Generator().manual_seed(42))
+    loader = data.DataLoader(dataset,batch_size = config.TRAIN['batch_size'],shuffle = True, num_workers = 2)
+    loader_eval = data.DataLoader(eval_ds,batch_size = config.TRAIN['batch_size'],shuffle = True, num_workers = 0)
     DEVICE = args.device
     loader = DeviceDataLoader(loader,device = DEVICE)
-    if args.retrain:
-        config_old = load_config(os.path.join(model_f,"config.toml"))
-        config_old.TRAIN = config.TRAIN #Overwrite training config.
-        config = config_old
-    elif args.config:
-        config = load_config(args.config)
+    loader_eval = DeviceDataLoader(loader_eval,device = DEVICE)
+    print("Train dataset: %d batches; Evaluation dataset: %d batches"%(len(loader),len(loader_eval)))
     net = CRNN(config)
-    t = SupervisedTrainer(loader,net,config)
+    t = SupervisedTrainer(loader,net,config,eval_dataloader = loader_eval)
     if args.retrain:
         t.load(model_f)
     lr = args.lr
     epoches = args.epoches
-    optim = optimizers[args.optimizer](net.parameters(),lr = lr)
+    optim = config.TRAIN['optimizer'](net.parameters(),lr = lr)
     COUNT_CYCLE = args.report
     print("Begin training the model.")
     t.train(epoches,optim,COUNT_CYCLE,model_f)
@@ -195,7 +209,7 @@ if __name__ == "__main__":
                         help="Training batch size.")
     parser.add_argument('--epoches', default = 10, type = int,
                         help = "The number of epoches to train.")
-    parser.add_argument('--report', default = 10, type = int,
+    parser.add_argument('--report', default = 20, type = int,
                         help = "The interval of training rounds to report.")
     parser.add_argument('--load', dest='retrain', action='store_true',
                         help='Load existed model.')
@@ -204,6 +218,8 @@ if __name__ == "__main__":
     parser.add_argument('--optimizer', default = "RMSprop",
                         help = "Optimizer to use, can be Adam, AdamW, SGD and RMSprop,\
                             default is RMSprop")
+    parser.add_argument('--threads', type = int, default = None,
+                        help = "Number of threads used by Pytorch")
     args = parser.parse_args(sys.argv[1:])
     os.makedirs(args.model_folder,exist_ok=True)
     main(args)
