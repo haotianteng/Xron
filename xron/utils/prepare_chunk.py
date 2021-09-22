@@ -9,8 +9,9 @@ import sys
 import h5py
 import numpy as np
 import argparse
+import seaborn as sns
 from tqdm import tqdm
-from scipy.signal import find_peaks
+from xron.utils.seq_op import fast5_iter,norm_by_noisiest_section
 from xron.utils.align import MetricAligner
 from Bio.Seq import Seq
 alt_map = {'ins':'0','M':'A','U':'T'}
@@ -23,58 +24,6 @@ def clean_repr(seq):
     for k,v in alt_map.items():
         seq = seq.replace(k,v)
     return seq
-
-def fast5_iter(fast5_dir,mode = 'r'):
-    for (dirpath, dirnames, filenames) in os.walk(fast5_dir+'/'):
-        for filename in filenames:
-            if not filename.endswith('fast5'):
-                continue
-            abs_path = os.path.join(dirpath,filename)
-            try:
-                root = h5py.File(abs_path,mode = mode)
-            except OSError as e:
-                print("Reading %s failed due to %s."%(abs_path,e))
-                continue
-            for read_id in root:
-                read_h = root[read_id]
-                signal_h = read_h['Raw']
-                signal = np.asarray(signal_h[('Signal')],dtype = np.float32)
-                read_id = signal_h.attrs['read_id']
-                yield read_h,signal,abs_path,read_id.decode("utf-8")
-
-def med_mad(x, factor=1.4826):
-    """
-    Calculate signal median and median absolute deviation
-    Same method used in Bonito Basecaller.
-    """
-    med = np.median(x)
-    mad = np.median(np.absolute(x - med)) * factor
-    return med, mad
-
-
-def norm_by_noisiest_section(signal, samples=100, threshold=6.0):
-    """
-    Normalise using the medmad from the longest continuous region where the
-    noise is above some threshold relative to the std of the full signal.This
-    function is borrowed from Bonito Basecaller.
-    """
-    threshold = signal.std() / threshold
-    noise = np.ones(signal.shape)
-
-    for idx in np.arange(signal.shape[0] // samples):
-        window = slice(idx * samples, (idx + 1) * samples)
-        noise[window] = np.where(signal[window].std() > threshold, 1, 0)
-
-    # start and end low for peak finding
-    noise[0] = 0; noise[-1] = 0
-    peaks, info = find_peaks(noise, width=(None, None))
-
-    if len(peaks):
-        widest = np.argmax(info['widths'])
-        med, mad = med_mad(signal[info['left_bases'][widest]: info['right_bases'][widest]])
-    else:
-        med, mad = med_mad(signal)
-    return (signal - med) / mad
 
 def retrive_seq(seq_h,event_stride):
     moves = np.asarray(seq_h['BaseCalled_template']['Move'])
@@ -92,12 +41,17 @@ def extract(args):
     meta_info = []
     chunks = []
     seqs = []
+    meds = []
+    mads = []
     if args.mode == "rna" or args.mode == "rna_meth":
         reverse_sig = True
         
     for read_h,signal,fast5_f,read_id in tqdm(iterator):
         read_len = len(signal)
-        signal = norm_by_noisiest_section(signal).astype(np.float16)
+        signal,med,mad = norm_by_noisiest_section(signal)
+        signal = signal.astype(np.float16)
+        meds.append(med)
+        mads.append(mad)
         if reverse_sig:
             signal = signal[::-1]
         if args.extract_seq: 
@@ -146,6 +100,9 @@ def extract(args):
     chunks = np.stack(chunks,axis = 0)
     np.savetxt(os.path.join(args.output,'meta.csv'),meta_info,fmt="%s")
     np.save(os.path.join(args.output,'chunks.npy'),chunks)
+    print("Average median value %f"%(np.mean(meds)))
+    print("Average median absolute deviation %f"%(np.mean(mads)))
+    np.save(os.path.join(args.output,'mm.npy'),(mads,meds))
     if args.extract_seq:
         seq_lens = [len(i) for i in seqs]
         seqs = np.array(seqs)

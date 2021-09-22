@@ -14,7 +14,10 @@ def watch_errors(fs):
         e = []
         with open(error_file,'r') as f:
             for line in f:
-                error = np.float(line.strip())
+                try:
+                    error = np.float(line.strip())
+                except:
+                    print(line.strip())
                 if not np.isnan(error):
                     e.append(error)
         errors.append(e)

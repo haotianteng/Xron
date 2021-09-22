@@ -56,7 +56,7 @@ class VAETrainer(Trainer):
         """
         super().__init__(train_dataloader=train_dataloader,
                          nets = {"encoder":encoder,
-                                 "critic":encoder,
+                                 "critic":critic,
                                  "decoder":decoder,
                                  "mm":mm},
                          config = config,
@@ -273,6 +273,8 @@ if __name__ == "__main__":
                         help = "The .npy file contain chunks.")
     parser.add_argument('-o', '--model_folder', required = True,
                         help = "The folder to save folder at.")
+    parser.add_argument('--pretrain_encoder',default = None,
+                        help = "The folder contain the pretrained encoder model.")
     parser.add_argument('-r', '--reference', required = True,
                         help = "The reference fastq file.")
     parser.add_argument('--seq', default = None,
