@@ -58,7 +58,7 @@ class Dataset(data.Dataset):
         None.
 
         """        
-        if seq_padding:
+        if seq_padding & (seq is not None):
             l_max = max(seq_len)
             seq = np.array([x+'$'*(l_max-len(x)) for x in seq])
         self.chunks = chunks[:,None,:].astype(np.float32)
@@ -69,8 +69,6 @@ class Dataset(data.Dataset):
         self.seq = seq
         if seq_len is not None:
             self.seq_len = seq_len[:,None].astype(np.int64)
-        else:
-            self.seq_len = seq_len.astype(np.int64)
         assert(not (seq is None)^(seq_len is None) )
         self.transform = transform
                 

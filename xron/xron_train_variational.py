@@ -159,7 +159,7 @@ class VAETrainer(Trainer):
         mm = self.mm
         signal = batch['signal']
         logprob = encoder.forward(signal) #[L,N,C]
-        mse_predict = torch.min(critic.forward(signal),dim = 2,keepdim = True).permute(1,2,0) #[L,N,C] -> [N,C,L]
+        mse_predict = critic.forward(signal).permute(1,2,0) #[L,N,C] -> [N,C,L]
         if np.random.rand()<self.epsilon:
             m = OHC(logits = logprob)
             sampling = m.sample().permute([1,2,0]) #[L,N,C]->[N,C,L]
@@ -242,6 +242,9 @@ def main(args):
     loader = data.DataLoader(dataset,batch_size = 200,shuffle = True, num_workers = 4)
     DEVICE = args.device
     loader = DeviceDataLoader(loader,device = DEVICE)
+    if args.pretrain_encoder:
+        encoder_config = load_config(os.path.join(args.pretrain_encoder,"config.toml"))
+        config.CNN,config.RNN,config.FNN = encoder_config.CNN,encoder_config.RNN,encoder_config.FNN
     if args.retrain:
         config_old = load_config(os.path.join(model_f,"config.toml"))
         config_old.TRAIN = config.TRAIN #Overwrite training config.
@@ -252,6 +255,8 @@ def main(args):
     mm = MM(config)
     aligner = MetricAligner(args.reference)
     t = VAETrainer(loader,encoder,critic,decoder,mm,config,aligner)
+    if args.pretrain_encoder:
+        t.load(args.pretrain_encoder)
     if args.retrain:
         t.load(model_f)
     lr = args.lr

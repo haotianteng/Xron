@@ -107,8 +107,13 @@ class Writer(object):
         self.count = 0
         self.base_dict = {i:b for i,b, in enumerate(config.CTC['alphabeta'])}
         self.prefix = write_dest
+        self.prefix_fastq = os.path.join(self.prefix,'fastqs')
+        os.mkdirs(self.prefix_fastq,exist_ok = True)
+        self.prefix_fast5 = os.path.join(self.prefix,'fast5s')
         self.seq_batch = config.EVAL['seq_batch']
         self.format = config.EVAL['format']
+        if self.format == "fast5":
+            os.mkdirs(self.prefix_fast5,exist_ok = True)
         self.stride = config.CNN['Layers'][-1]['stride']
         
     def add(self,css,read_id,fast5f,move):
@@ -125,10 +130,10 @@ class Writer(object):
     
     def flush(self):
         if self.format == "fastq":
-            self.write_fastq("%s/%d.fastq"%(self.prefix,self.count))
+            self.write_fastq("%s/%d.fastq"%(self.prefix_fastq,self.count))
         if self.format == "fast5":
-            self.write_fastq("%s/%d.fastq"%(self.prefix,self.count))
-            self.write_fast5(self.prefix)
+            self.write_fastq("%s/%d.fastq"%(self.prefix_fastq,self.count))
+            self.write_fast5(self.prefix_fast5)
         self.count += 1
         self.css_seqs = []
         self.read_ids = []
@@ -176,7 +181,7 @@ def main(args):
                 "chunk_len":args.chunk_len,
                 'device':args.device,
                 'assembly_method':args.assembly_method,
-                'seq_batch':40,
+                'seq_batch':4000,
                 'format':'fast5' if args.fast5 else 'fastq'}
     config = CALL_CONFIG()
     print("Construct and load the model.")

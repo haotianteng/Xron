@@ -27,7 +27,10 @@ def clean_repr(seq):
 
 def retrive_seq(seq_h,event_stride):
     moves = np.asarray(seq_h['BaseCalled_template']['Move'])
-    seq = np.asarray(seq_h['BaseCalled_template']['Fastq']).tobytes().decode('utf-8').split('\n')[1]
+    try:
+        seq = np.asarray(seq_h['BaseCalled_template']['Fastq']).tobytes().decode('utf-8').split('\n')[1]
+    except UnicodeDecodeError:
+        seq = str(np.asarray(seq_h['BaseCalled_template']['Fastq']).astype(str)).split('\n')[1]
     pos = np.repeat(np.cumsum(moves)-1,repeats = event_stride).astype(np.int32)
     return seq,pos
     
