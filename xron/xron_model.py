@@ -47,11 +47,11 @@ class CRITIC_CNN(object):
         }
 
 class CRITIC_RNN(CRITIC_CNN):
-    RNN = {'layer_type':'BidirectionalRNN','hidden_size':64,'cell_type':'LSTM','num_layers':3}
+    RNN = {'layer_type':'BidirectionalRNN','hidden_size':64,'cell_type':'LSTM','num_layers':1}
 class CRITIC_FNN(CRITIC_RNN):
     FNN = {'N_Layer':2,
            'Layers':[{'out_features':32,'bias':True,'activation':'ReLU'},
-                     {'out_features':N_BASE+1,'bias':False,'activation':'Linear'}]}
+                     {'out_features':1,'bias':False,'activation':'Linear'}]}
 class CRITIC_CONFIG(CRITIC_FNN):
     pass
 

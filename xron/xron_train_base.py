@@ -121,9 +121,9 @@ class Trainer(object):
             self.global_step = int(latest_ckpt.split('-')[1])
         ckpt = torch.load(os.path.join(save_folder,latest_ckpt),
                           map_location=self.device)
-        for key,net in self.nets.items():
-            net.load_state_dict(ckpt[key])
-            net.to(self.device)
+        for key,net in ckpt.items():
+            self.nets[key].load_state_dict(net)
+            self.nets[key].to(self.device)
 
 class DeviceDataLoader():
     """Wrap a dataloader to move data to a device"""
