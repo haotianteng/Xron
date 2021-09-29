@@ -13,7 +13,7 @@ import torch.utils.data as data
 from torch.utils.data.dataloader import DataLoader
 from xron.xron_input import Dataset, ToTensor
 from xron.xron_train_base import Trainer, DeviceDataLoader, load_config
-from xron.xron_model import REVCNN,DECODER_CONFIG,CRNN,MM_CONFIG,MM,CRITIC_CONFIG
+from xron.xron_model import REVCNN,DECODER_CONFIG,CRNN,CRITIC,MM_CONFIG,MM,CRITIC_CONFIG
 from xron.xron_label import MetricAligner
 from torch.distributions.one_hot_categorical import OneHotCategorical as OHC
 
@@ -21,7 +21,7 @@ class VAETrainer(Trainer):
     def __init__(self,
                  train_dataloader:DataLoader,
                  encoder:CRNN,
-                 critic:CRNN,
+                 critic:CRITIC,
                  decoder:REVCNN,
                  mm:MM,
                  config:Union[DECODER_CONFIG,MM_CONFIG],
@@ -250,7 +250,7 @@ def main(args):
         config_old.TRAIN = config.TRAIN #Overwrite training config.
         config = config_old
     encoder = CRNN(config)
-    critic = CRNN(critic_config)
+    critic = CRITIC(critic_config)
     decoder = REVCNN(config)
     mm = MM(config)
     aligner = MetricAligner(args.reference)
