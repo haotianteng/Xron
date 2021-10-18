@@ -11,6 +11,7 @@ import torch
 import argparse
 import numpy as np
 import torch.utils.data as data
+from itertools import islice
 from typing import List,Union
 from torchvision import transforms
 from matplotlib import pyplot as plt
@@ -67,6 +68,8 @@ def cmd_args():
                         help="The .npy file contain the sueqnece length.")
     parser.add_argument('--device', default = 'cuda',
                         help="The device used for training, can be cpu or cuda.")
+    parser.add_argument('--repeat', type = int, default = 5,
+                        help="The repeat used to test.")
     args = parser.parse_args(sys.argv[1:])
     return args
 
@@ -76,6 +79,7 @@ if __name__ == "__main__":
     #Load model
     print("Load model.")
     config = load_config(os.path.join(args.model_folder,'config.toml'))
+    stride = config.CNN['Layers'][-1]['stride']
     config.EVALUATION = {"batch_size":200,
                          "device":args.device}
     encoder = CRNN(config)
@@ -101,8 +105,7 @@ if __name__ == "__main__":
     loader = DeviceDataLoader(loader,device = DEVICE)
     
     #Evaluation
-    for batch in loader:
-        break
+    batch = next(islice(loader,2,None))
     rc_signal,prob,predictions,sampling = e.eval_once(batch)
     rc_signal = rc_signal.detach().cpu().numpy()
     prob = prob.detach().cpu().numpy()
@@ -110,14 +113,15 @@ if __name__ == "__main__":
     norm_signal = (rc_signal - np.mean(rc_signal,axis = 2))/np.std(rc_signal,axis = 2)
     
     #Plot
-    idx = np.random.randint(low = 0, high = config.EVALUATION['batch_size']-1)
-    fig,axs = plt.subplots(nrows = 2,figsize = (20,20))
-    start_idx = 500
-    last_idx = 1000
-    axs[0].plot(norm_signal[idx,0,start_idx:last_idx],label = "Reconstruction")
-    axs[0].plot(batch['signal'].cpu()[idx,0,start_idx:last_idx],label = "Original signal")
-    for i in np.arange(prob.shape[2]):
-        axs[1].plot(prob[10:200,idx,i])
-    axs[0].legend()
-    fig.savefig(os.path.join(args.model_folder,'reconstruction.png'))
+    for r in np.arange(args.repeat):
+        idx = np.random.randint(low = 0, high = config.EVALUATION['batch_size']-1)
+        fig,axs = plt.subplots(nrows = 2,figsize = (20,20))
+        start_idx =0
+        last_idx = 800
+        axs[0].plot(norm_signal[idx,0,start_idx:last_idx],label = "Reconstruction")
+        axs[0].plot(batch['signal'].cpu()[idx,0,start_idx:last_idx],label = "Original signal")
+        for i in np.arange(prob.shape[2]):
+            axs[1].plot(prob[start_idx:last_idx//stride,idx,i])
+        axs[0].legend()
+        fig.savefig(os.path.join(args.model_folder,'reconstruction_%d.png'%(r)))
         

@@ -11,9 +11,9 @@ from itertools import chain
 from torchvision import transforms
 import torch.utils.data as data
 from torch.utils.data.dataloader import DataLoader
-from xron.xron_input import Dataset, ToTensor
+from xron.xron_input import Dataset, ToTensor, NumIndex,rna_filt,dna_filt
 from xron.xron_train_base import Trainer, DeviceDataLoader, load_config
-from xron.xron_model import REVCNN,DECODER_CONFIG,CRNN,CRITIC,MM_CONFIG,MM,CRITIC_CONFIG
+from xron.xron_model import REVCNN,DECODER_CONFIG,CRNN,CRITIC_CONFIG,CRITIC,MM_CONFIG,MM
 from xron.xron_label import MetricAligner
 from torch.distributions.one_hot_categorical import OneHotCategorical as OHC
 
@@ -68,7 +68,6 @@ class VAETrainer(Trainer):
         self.mm = mm
         self.aligner = aligner
         self.train_config = config.TRAIN
-        
         self.decay = self.train_config["decay"]
         self.global_step = 0
         self.awake = False
@@ -132,13 +131,15 @@ class VAETrainer(Trainer):
                 opt_d.zero_grad()
                 losses[-3].backward()
                 opt_d.step()
-                losses = self.train_step(batch)
-                loss = -alpha*losses[0]+beta*losses[1]+gamma*losses[2] #Maximize -H(q), minimize -(cross entropy loss)
-                opt_e.zero_grad()
-                loss.backward()
-                opt_e.step()
+                if self.global_step < preheat:
+                    losses = self.train_step(batch)
+                    loss = -alpha*losses[0]+beta*losses[1]+gamma*losses[2] #Maximize -H(q), minimize -(cross entropy loss)
+                    opt_e.zero_grad()
+                    loss.backward()
+                    opt_e.step()
                 if (self.global_step+1)%save_cycle==0:
                     self.save()
+                    self.mm.save_embedding(alphabeta=self.config.CTC['alphabeta'])
                     eval_i,valid_batch = next(enumerate(self.eval_ds))
                     valid_error,valid_perm = self.valid_step(valid_batch)
                     records['entropy_losses'].append(losses[0].detach().cpu().numpy()[()])
@@ -173,9 +174,10 @@ class VAETrainer(Trainer):
         mse_mm = decoder.mse_loss(rc_mm,signal)
         entropy_loss = decoder.entropy_loss(logprob.permute([1,2,0]),sampling.max(dim = 1)[1])
         raw_seq = torch.argmax(sampling,dim = 1)
-        critic_loss = torch.mean(critic.mse_loss(mse_combine,mse_predict))
+        critic_loss = torch.mean(critic.mse_loss(mse_combine.detach(),mse_predict))
+
         sample_logprob = torch.sum(logprob.permute([1,2,0])*sampling,axis = (1,2))
-        rc_loss = torch.mean(torch.mean(mse_combine - mse_predict,axis = (1,2))*sample_logprob)
+        rc_loss = torch.mean(torch.mean(mse_combine - mse_predict.detach(),axis = (1,2))*sample_logprob)
         decoder_loss_combine = torch.mean(mse_combine)
         decoder_loss_mm = torch.mean(mse_mm)
 
@@ -204,18 +206,20 @@ class VAETrainer(Trainer):
                            beam_size = self.config.CTC['beam_size'],
                            beam_cut_threshold = self.config.CTC['beam_cut_threshold'])
             best_perm = np.argmin(errors)
+            return errors[best_perm],perms[best_perm]
         else:
             out_seq = torch.argmax(out,dim = 2)
             identities,perms = self.aligner.permute_align(out_seq.cpu().detach().numpy())
             score = np.mean(identities,axis = 1)
             best_perm = np.argmax(score)
-        return score[best_perm],perms[best_perm]
+            return 1-score[best_perm],perms[best_perm]
     
 def main(args):
     class CTC_CONFIG(MM_CONFIG):
         CTC = {"beam_size":5,
                "beam_cut_threshold":0.05,
-               "alphabeta": "ACGT"}
+               "alphabeta": "ACGTM",
+               "mode":"rna"}
     class TRAIN_CONFIG(CTC_CONFIG):
         TRAIN = {"inital_learning_rate":args.lr,
                  "batch_size":args.batch_size,
@@ -225,11 +229,12 @@ def main(args):
                  "alpha":0.1, #Entropy loss scale factor
                  "beta": 1., #Reconstruction loss scale factor
                  "gamma":0, #Alignment loss scale factor
-                 "preheat":500,
+                 "preheat":5000,
                  "keep_record":5,
                  "decay":args.decay,}
         
     config = TRAIN_CONFIG()
+    config.PORE_MODEL["N_BASE"] = len(config.CTC["alphabeta"])
     critic_config = CRITIC_CONFIG()
     print("Read chunks and sequence.")
     chunks = np.load(args.chunks,allow_pickle = True)
@@ -238,8 +243,16 @@ def main(args):
     ref_len = np.load(args.seq_len) if args.seq_len else None
     print("Construct and load the model.")
     model_f = args.model_folder
-    dataset = Dataset(chunks,seq = reference,seq_len = ref_len,transform = transforms.Compose([ToTensor()]))
-    loader = data.DataLoader(dataset,batch_size = 200,shuffle = True, num_workers = 4)
+    if reference is not None and (reference[0].dtype.kind in ['U','S']):
+        if config.CTC['mode'] == 'rna':
+            chunks,reference,ref_len = rna_filt(chunks,reference,ref_len)
+        elif config.CTC['mode'] == 'dna':
+            chunks,reference,ref_len = dna_filt(chunks,reference,ref_len)
+        alphabet_dict = {x:i+1 for i,x in enumerate(TRAIN_CONFIG.CTC['alphabeta'])}
+        dataset = Dataset(chunks,seq = reference,seq_len = ref_len,transform = transforms.Compose([NumIndex(alphabet_dict),ToTensor()]))
+    else:
+        dataset = Dataset(chunks,seq = reference,seq_len = ref_len,transform = transforms.Compose([ToTensor()]))
+    loader = data.DataLoader(dataset,batch_size = args.batch_size,shuffle = True, num_workers = 4)
     DEVICE = args.device
     loader = DeviceDataLoader(loader,device = DEVICE)
     if args.pretrain_encoder:

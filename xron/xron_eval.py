@@ -17,6 +17,11 @@ from xron.xron_model import CRNN, CONFIG
 from xron.xron_train_base import load_config
 from xron.utils.seq_op import raw2seq,fast5_iter,norm_by_noisiest_section,list2string
 from xron.utils.easy_assembler import simple_assembly_qs
+from itertools import groupby 
+
+##Debug module
+from timeit import default_timer as timer
+##
 
 def load(model_folder,net,device = 'cuda'):
     ckpt_file = os.path.join(model_folder,'checkpoint')
@@ -32,27 +37,31 @@ def load(model_folder,net,device = 'cuda'):
 
 def chunk_feeder(fast5_f,config):
     iterator = fast5_iter(fast5_f)
-    batch_size = config.EVAL['batch_size']
-    chunk_len = config.EVAL['chunk_len']
-    device = config.EVAL['device']
-    chunks = []
-    meta_info = []
+    e = config.EVAL
+    batch_size,chunk_len,device,offset = e['batch_size'],e['chunk_len'],e['device'],e['offset']
+    chunks,meta_info = [],[]
     for read_h,signal,fast5_f,read_id in tqdm(iterator):
         read_len = len(signal)
-        signal = norm_by_noisiest_section(signal)[0].astype(np.float16)
+        signal = norm_by_noisiest_section(signal,offset = offset)[0].astype(np.float16)
         if config.CTC['mode'] == "rna":
             signal = signal[::-1]
         current_chunks = np.split(signal,np.arange(0,read_len,chunk_len))[1:]
         last_chunk = current_chunks[-1]
-        current_chunks[-1]= np.pad(last_chunk,(0,args.chunk_len-len(last_chunk)),'constant',constant_values = (0,0))
+        last_chunk_len = len(last_chunk)
+        current_chunks[-1]= np.pad(last_chunk,(0,args.chunk_len-last_chunk_len),'constant',constant_values = (0,0))
         chunks += current_chunks
-        meta_info += [(fast5_f,read_id,str(args.chunk_len))]*len(current_chunks)
-        if len(chunks) > batch_size:
+        meta_info += [(fast5_f,read_id,str(args.chunk_len))]*(len(current_chunks)-1) 
+        meta_info += [(fast5_f,read_id,last_chunk_len)]
+        while len(chunks) >= batch_size:
             curr_chunks = chunks[:batch_size]
             curr_meta = meta_info[:batch_size]
             yield torch.from_numpy(np.stack(curr_chunks,axis = 0)[:,None,:].astype(np.float32)).to(device),curr_meta
             chunks = chunks[batch_size:]
             meta_info = meta_info[batch_size:]
+    if len(chunks):
+        chunks += [chunks[-1]]*(batch_size - len(chunks))
+        meta_info += [(None,None,None)]*(batch_size - len(chunks))
+        yield torch.from_numpy(np.stack(chunks,axis = 0)[:,None,:].astype(np.float32)).to(device),curr_meta
 
 def qs(consensus, consensus_qs, output_standard='phred+33'):
     """Calculate the quality score for the consensus read.
@@ -78,16 +87,28 @@ def qs(consensus, consensus_qs, output_standard='phred+33'):
         q_string = [chr(x + 33) for x in quality_score.astype(int)]
         return ''.join(q_string)
 
-def vaterbi_decode(logits:torch.tensor,base_dict = None):
+def vaterbi_decode(logits:torch.tensor):
+    """
+    Vaterbi decdoing algorithm
+
+    Parameters
+    ----------
+    logits : torch.tensor
+        Shape L-N-C
+
+    Returns
+    -------
+        sequence: A length N list contains ndarray arrays.
+        moves: A length N list contains the moves array.
+
+    """
     sequence = np.argmax(logits,axis = 2)
-    sequence = sequence.T
-    moves = sequence != 0
-    sequence = raw2seq(sequence)
-    if base_dict:
-        return [list2string(x,base_dict) for x in sequence]
+    sequence = sequence.T #L,N -> N,L
+    sequence,moves = raw2seq(sequence)
     return sequence,list(moves.astype(np.int))
 
 def consensus_call(seqs,metas,moves,assembly_func,logits = None):
+    ids,counts = np.unique([x[1] for x in metas],return_counts = True)
     curr = [(x,y,z,w) for x,y,z,w in zip(seqs,metas,logits,moves) if y[1] == metas[0][1]]
     curr_seqs,curr_meta,qs_list,moves = zip(*curr)
     css = assembly_func(curr_seqs,qs_list = qs_list,jump_step_ratio = 0.9)
@@ -96,6 +117,10 @@ def consensus_call(seqs,metas,moves,assembly_func,logits = None):
     id = set([x[1] for x in curr_meta])
     assert len(fast5f)==1 and len(id)==1
     return css,id.pop(),fast5f.pop(),curr_move
+
+def all_equal(iterable):
+    g = groupby(iterable)
+    return next(g, True) and not next(g, False)
 
 class Writer(object):
     def __init__(self,write_dest,config):
@@ -108,12 +133,12 @@ class Writer(object):
         self.base_dict = {i:b for i,b, in enumerate(config.CTC['alphabeta'])}
         self.prefix = write_dest
         self.prefix_fastq = os.path.join(self.prefix,'fastqs')
-        os.mkdirs(self.prefix_fastq,exist_ok = True)
+        os.makedirs(self.prefix_fastq,exist_ok = True)
         self.prefix_fast5 = os.path.join(self.prefix,'fast5s')
         self.seq_batch = config.EVAL['seq_batch']
         self.format = config.EVAL['format']
         if self.format == "fast5":
-            os.mkdirs(self.prefix_fast5,exist_ok = True)
+            os.makedirs(self.prefix_fast5,exist_ok = True)
         self.stride = config.CNN['Layers'][-1]['stride']
         
     def add(self,css,read_id,fast5f,move):
@@ -138,6 +163,7 @@ class Writer(object):
         self.css_seqs = []
         self.read_ids = []
         self.fast5_fs = []
+        self.moves = []
         self.qs = []
         
     def write_fasta(self,output_f):
@@ -182,7 +208,8 @@ def main(args):
                 'device':args.device,
                 'assembly_method':args.assembly_method,
                 'seq_batch':4000,
-                'format':'fast5' if args.fast5 else 'fastq'}
+                'format':'fast5' if args.fast5 else 'fastq',
+                'offset':args.offset}
     config = CALL_CONFIG()
     print("Construct and load the model.")
     model_f = args.model_folder
@@ -201,22 +228,42 @@ def main(args):
     assembly_func = partial(simple_assembly_qs,
                             kernal = args.assembly_method,
                             alphabeta = config.CTC["alphabeta"])
+    nn_time = 0.
+    assembly_time = 0.
+    writing_time = 0.
     with torch.no_grad():
         for chunk,meta in df:
+            start = timer()
             logits = net(chunk).cpu().numpy() #Length-Batch-Channel
-            qs_list = np.max(logits,axis = 2)
+            end = timer()
+            nn_time+= (end-start)
+            start = timer()
+            qs_list = np.max(logits,axis = 2).T
             sequence,move = vaterbi_decode(logits)
             seqs += sequence
             metas += meta
             moves += move
-            while len(np.unique([x[1] for x in metas]))>1:
+            if (None,None,None) in metas:
+                print("Remove the padding chunks.")
+                remain = [[x,y,z] for x,y,z in zip(seqs,metas,moves) if y[1] != None]
+                seqs,metas,moves = zip(*remain)
+                seqs,metas,moves = list(seqs),list(metas),list(moves)
+            while not all_equal(x[1] for x in metas):
                 r = consensus_call(seqs,metas,moves,assembly_func,logits = qs_list)
+                start_w = timer()
                 writer.add(*r)
+                end_w = timer()
+                writing_time += (end_w-start_w)
                 remain = [[x,y,z] for x,y,z in zip(seqs,metas,moves) if y[1] != metas[0][1]]
                 seqs,metas,moves = zip(*remain)
-                seqs = list(seqs)
-                metas = list(metas)
-                moves = list(moves)
+                seqs,metas,moves = list(seqs),list(metas),list(moves)
+            end = timer()
+            assembly_time += (end-start)
+    start_w = timer()
+    writer.flush()
+    end_w = timer()
+    writing_time += (end_w-start_w)
+    print("NN_time:%f,assembly_time:%f,writing_time:%f"%(nn_time,assembly_time,writing_time))
             
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
@@ -231,8 +278,8 @@ if __name__ == "__main__":
                         help = "If output fast5 files.")
     parser.add_argument('--device', default = 'cuda',
                         help="The device used for training, can be cpu or cuda.")
-    parser.add_argument('--batch_size', default = 200, type = int,
-                        help="Training batch size.")
+    parser.add_argument('--batch_size', default = None, type = int,
+                        help="Training batch size, default use the maximum size of the GPU memory, batch size and memory consume relationship: 200:6.4GB, 400:11GB, 800:20GB, 1200:30GB.")
     parser.add_argument('--chunk_len', default = 2000, type = int,
                         help="The length of each chunk signal.")
     parser.add_argument('--beam',default = 1,type = int,
@@ -241,8 +288,15 @@ if __name__ == "__main__":
                         help = "Training configuration.")
     parser.add_argument('--threads', type = int, default = None,
                         help = "Number of threads used by Pytorch")
-    parser.add_argument('--assembly_method',type = str, default = "glue",
+    parser.add_argument('--assembly_method',type = str, default = "stick",
                         help = "Assembly method used, can be glue, global, simple and stick.")
+    parser.add_argument('--offset',type = float,default = 0.0,
+                        help = "Manual set a offset to the normalized signal.")
     args = parser.parse_args(sys.argv[1:])
+    MEMORY_PER_BATCH_PER_SIGNAL=13430. #KB
+    t = torch.cuda.get_device_properties(0).total_memory
+    if not args.batch_size:
+        args.batch_size = int(t/MEMORY_PER_BATCH_PER_SIGNAL/args.chunk_len//100*100)
+        print("Auto configure to use %d batch_size for a total of %.1f GB memory."%(args.batch_size,t/1024**3))
     os.makedirs(args.output,exist_ok=True)
     main(args)

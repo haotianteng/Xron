@@ -6,6 +6,7 @@ Created on Thu Mar 11 16:07:12 2021
 import os
 import toml
 import torch
+import itertools
 import numpy as np
 from typing import Union,Dict
 from torch.utils.data.dataloader import DataLoader
@@ -49,6 +50,8 @@ class Trainer(object):
         else:
             self.eval_ds = eval_dataloader
         self.nets = nets
+        paras = [x.parameters() for x in self.nets.values()]
+        self.parameters = itertools.chain(*paras)
         for net in self.nets.values():
             net.to(self.device)
         self.global_step = 0
@@ -122,8 +125,11 @@ class Trainer(object):
         ckpt = torch.load(os.path.join(save_folder,latest_ckpt),
                           map_location=self.device)
         for key,net in ckpt.items():
-            self.nets[key].load_state_dict(net)
-            self.nets[key].to(self.device)
+            if key in self.nets.keys():
+                self.nets[key].load_state_dict(net)
+                self.nets[key].to(self.device)
+            else:
+                print("%s net is defined in the checkpoint but is not imported because it's not defined in the model."%(key))
 
 class DeviceDataLoader():
     """Wrap a dataloader to move data to a device"""

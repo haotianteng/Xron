@@ -20,8 +20,10 @@ module_dict = {'Res1d':xron.nn.Res1d,
                'LSTM':nn.LSTM,
                'ReLU':nn.ReLU,
                'Sigmoid':nn.Sigmoid}
-PORE_MODEL_F = "pore_models/5mer_level_table.model"
+# PORE_MODEL_F = "pore_models/5mer_level_table.model"
+PORE_MODEL_F = "pore_models/m6A_5mer_level.model"
 N_BASE = 5 #AGCTM
+
 class CNN_CONFIG(object):
     CNN = {'N_Layer':3,
            'Layers': [{'layer_type':'Res1d','kernel_size':5,'stride':1,'out_channels':4},
@@ -37,7 +39,6 @@ class FNN_CONFIG(RNN_CONFIG):
                      {'out_features':N_BASE+1,'bias':True,'activation':'Linear'}]}
 class CONFIG(FNN_CONFIG):
     pass
-
 ### Critic Configuration
 class CRITIC_CNN(object):
     CNN = {'N_Layer':3,
@@ -71,8 +72,9 @@ class DECODER_CONFIG(CONFIG):
 
 class MM_CONFIG(DECODER_CONFIG):
     PORE_MODEL = {"PORE_MODEL_F":PORE_MODEL_F,
-                  "N_BASE": 5,
-                  "K" : 5}
+                  "N_BASE": N_BASE, #for AGCT is 4, for AGCTM is 5
+                  "K" : 5,
+                  "LOAD": False} #If load the pretrain pore model.
     DECODER = {"X_UPSAMPLING":5, #The scale factor of upsampling.
                "USE_STD":False}
 
@@ -85,32 +87,11 @@ def copy_config(config):
        setattr(config_copy,module,deepcopy(getattr(config,module)))
     return config_copy
 
-class CRITIC(nn.Module):
-    def __init__(self,config:CONFIG):
-        """
-        A Convolutional-Recurrent neural network for encoding the signal into
-        base probability.
-
-        Parameters
-        ----------
-        config : CONFIG
-            The configuration used to generate the net, need to contain CNN,
-            RNN and FNN attributes.
-        """
-        super().__init__()
-        self.config = copy_config(config)
-        config = copy_config(self.config)
-        cnn = self._make_cnn(config.CNN)
-        permute = xron.nn.Permute([2,0,1]) #[N,C,L] -> [L,N,C]
-        rnn = self._make_rnn(config.RNN,
-                             in_channels = config.CNN['Layers'][-1]['out_channels'])
-        directions = 2 if self.config.RNN['layer_type'] == "BidirectionalRNN" else 1
-        fnn = self._make_fnn(config.FNN.copy(),
-                             in_channels = config.RNN['hidden_size']*directions)
-        self.net = nn.Sequential(*cnn,permute,*rnn,*fnn)
-        self.mse_loss = nn.MSELoss(reduction = "mean")
-        
-    def _make_cnn(self,cnn_config,in_channels = 1):
+class BASE(nn.Module):
+    """The base class define the operation constructing a NN from configuration.
+    """
+    def _make_cnn(self,cnn_config:dict,in_channels = 1):
+        cnn_config = deepcopy(cnn_config)
         layers = []
         for l in cnn_config['Layers']:
             block = module_dict[l.pop('layer_type')]
@@ -119,6 +100,7 @@ class CRITIC(nn.Module):
         return layers
     
     def _make_rnn(self,rnn_config,in_channels):
+        rnn_config = deepcopy(rnn_config)
         block = module_dict[rnn_config.pop('layer_type')]
         cell = module_dict[rnn_config.pop('cell_type')]
         return [block(input_size = in_channels,
@@ -126,6 +108,7 @@ class CRITIC(nn.Module):
                             **rnn_config)]
     
     def _make_fnn(self,fnn_config,in_channels):
+        fnn_config = deepcopy(fnn_config)
         layers = []
         for l in fnn_config['Layers']:
             activation = l.pop('activation')
@@ -138,7 +121,7 @@ class CRITIC(nn.Module):
     def forward(self,batch):
         return self.net(batch)
 
-class CRNN(nn.Module):
+class CRITIC(BASE):
     def __init__(self,config:CONFIG):
         """
         A Convolutional-Recurrent neural network for encoding the signal into
@@ -151,8 +134,33 @@ class CRNN(nn.Module):
             RNN and FNN attributes.
         """
         super().__init__()
-        self.config = copy_config(config)
-        config = copy_config(self.config)
+        self.config = config
+        cnn = self._make_cnn(config.CNN)
+        permute = xron.nn.Permute([2,0,1]) #[N,C,L] -> [L,N,C]
+        rnn = self._make_rnn(config.RNN,
+                             in_channels = config.CNN['Layers'][-1]['out_channels'])
+        directions = 2 if self.config.RNN['layer_type'] == "BidirectionalRNN" else 1
+        fnn = self._make_fnn(config.FNN.copy(),
+                             in_channels = config.RNN['hidden_size']*directions)
+        self.net = nn.Sequential(*cnn,permute,*rnn,*fnn)
+        self.mse_loss = nn.MSELoss(reduction = "none")
+        
+
+
+class CRNN(BASE):
+    def __init__(self,config:CONFIG):
+        """
+        A Convolutional-Recurrent neural network for encoding the signal into
+        base probability.
+
+        Parameters
+        ----------
+        config : CONFIG
+            The configuration used to generate the net, need to contain CNN,
+            RNN and FNN attributes.
+        """
+        super().__init__()
+        self.config = config
         cnn = self._make_cnn(config.CNN)
         permute = xron.nn.Permute([2,0,1]) #[N,C,L] -> [L,N,C]
         rnn = self._make_rnn(config.RNN,
@@ -164,34 +172,6 @@ class CRNN(nn.Module):
         self.net = nn.Sequential(*cnn,permute,*rnn,*fnn,log_softmax)
         self.ctc = nn.CTCLoss(zero_infinity = False)
         
-    def _make_cnn(self,cnn_config,in_channels = 1):
-        layers = []
-        for l in cnn_config['Layers']:
-            block = module_dict[l.pop('layer_type')]
-            layers.append(block(in_channels = in_channels,**l))
-            in_channels = l['out_channels']
-        return layers
-    
-    def _make_rnn(self,rnn_config,in_channels):
-        block = module_dict[rnn_config.pop('layer_type')]
-        cell = module_dict[rnn_config.pop('cell_type')]
-        return [block(input_size = in_channels,
-                            cell = cell,
-                            **rnn_config)]
-    
-    def _make_fnn(self,fnn_config,in_channels):
-        layers = []
-        for l in fnn_config['Layers']:
-            activation = l.pop('activation')
-            layers.append(nn.Linear(in_features = in_channels,**l))
-            if activation != 'Linear':
-                layers.append(module_dict[activation]())
-            in_channels = l['out_features']
-        return layers
-        
-    def forward(self,batch):
-        return self.net(batch)
-    
     def ctc_loss(self,
                  posterior:Tensor,
                  posterior_len:Tensor,
@@ -429,7 +409,7 @@ class CRNN(nn.Module):
             perms.append(perm)
         return np.asarray(errors), np.asarray(perms)
 
-class REVCNN(nn.Module):
+class REVCNN(BASE):
     def __init__(self,config:DECODER_CONFIG):
         """
         The reverse convolutional neural network to reconstruct the signal from
@@ -448,9 +428,8 @@ class REVCNN(nn.Module):
 
         """
         super().__init__()
-        self.config = copy_config(config)
+        self.config = config
         self.n_base = config.FNN['Layers'][-1]['out_features']
-        config = copy_config(self.config)
         cnn = self._make_cnn(config.CNN_DECODER, in_channels = self.n_base)
         permute = xron.nn.Permute([0,2,1]) #[N,C,L] -> [N,L,C]
         fnn = self._make_fnn(config.FNN_DECODER.copy(),
@@ -458,27 +437,6 @@ class REVCNN(nn.Module):
         self.net = nn.Sequential(*cnn,permute,*fnn)
         self.mse_loss = nn.MSELoss(reduction = 'none')
         self.entropy_loss = nn.CrossEntropyLoss()
-    
-    def _make_cnn(self,cnn_config,in_channels = 1):
-        layers = []
-        for l in cnn_config['Layers']:
-            block = module_dict[l.pop('layer_type')]
-            layers.append(block(in_channels = in_channels,**l))
-            in_channels = l['out_channels']
-        return layers
-    
-    def _make_fnn(self,fnn_config,in_channels):
-        layers = []
-        for l in fnn_config['Layers']:
-            activation = l.pop('activation')
-            layers.append(nn.Linear(in_features = in_channels,**l))
-            if activation != 'Linear':
-                layers.append(module_dict[activation]())
-            in_channels = l['out_features']
-        return layers
-        
-    def forward(self,batch):
-        return self.net(batch)
 
 class MM(nn.Module):
     def __init__(self,config:MM_CONFIG):
@@ -495,20 +453,22 @@ class MM(nn.Module):
         None.
         """
         super().__init__()
-        self.pore_model = pd.read_csv(config.PORE_MODEL['PORE_MODEL_F'],
-                                      delimiter = '\t')
-        self.padding_signal = np.mean(self.pore_model.level_mean)
-        level_tensor = torch.tensor([self.padding_signal]+list(self.pore_model.level_mean)).unsqueeze(1).to(torch.float32)
-        self.level_embedding = nn.Embedding.from_pretrained(level_tensor,
-                                                            freeze = False,
-                                                            padding_idx=0)
-        self.config = copy_config(config)
-        config = copy_config(self.config)
-        self.upsampling = torch.nn.Upsample(scale_factor = config.DECODER['X_UPSAMPLING'],
-                                     mode = 'nearest')
-        self.entropy_loss = nn.CrossEntropyLoss()
+        self.config = config
         self.N_BASE = self.config.PORE_MODEL['N_BASE']
         self.K = self.config.PORE_MODEL['K']
+        if config.PORE_MODEL['LOAD']:
+            self.pore_model = pd.read_csv(config.PORE_MODEL['PORE_MODEL_F'],
+                                          delimiter = '\t')
+            self.padding_signal = np.mean(self.pore_model.level_mean)
+            level_tensor = torch.tensor([self.padding_signal]+list(self.pore_model.level_mean)).unsqueeze(1).to(torch.float32)
+            self.level_embedding = nn.Embedding.from_pretrained(level_tensor,
+                                                                freeze = False,
+                                                                padding_idx=0)
+        else:
+            self.level_embedding = nn.Embedding((self.N_BASE)**self.K+1,1,padding_idx = 0)
+        self.upsampling = torch.nn.Upsample(scale_factor=config.DECODER['X_UPSAMPLING'],
+                                     mode = 'nearest')
+        self.entropy_loss = nn.CrossEntropyLoss()
         self.bn = torch.nn.BatchNorm1d(1)
         
     def forward(self, sampling:torch.Tensor,device = None):
@@ -524,7 +484,6 @@ class MM(nn.Module):
     def _kmer_decode(self,
                      sequence_batch):
         kmer_batch = np.zeros((sequence_batch.shape[0],sequence_batch.shape[1]))
-        N_BASE = self.N_BASE
         K = self.K
         for i,sequence in enumerate(sequence_batch):
             kmer_seq = []
@@ -540,9 +499,13 @@ class MM(nn.Module):
             kmer_seq = np.asarray(kmer_seq)
             kmer_batch[i,:] = kmer_seq+1
         # signal_batch = torch.from_numpy(signal_batch[:,None,:])
+        if kmer_batch.max() >= self.level_embedding.weight.shape[0]:
+            print(kmer_batch.max())
+            print(self.level_embedding.weight.shape)
         return torch.LongTensor(kmer_batch)
     
     def kmer2idx(self,kmer:str):
+        "Map the kmer to index, e.g. AAAAA -> 0, AAAAC -> 1, AAAAG -> 2, ..."
         if len(kmer)<self.K:
             return -1
         multi = 1
@@ -552,13 +515,31 @@ class MM(nn.Module):
             multi = multi * self.N_BASE
         return idx
     
-    
+    def idx2kmer(self,idx:int,ab_dict = None):
+        if not ab_dict:
+            ab_dict = {i:str(i+1) for i in np.arange(self.N_BASE)}
+        kmer = ''
+        while idx>=self.N_BASE:
+            kmer = ab_dict[idx%self.N_BASE] + kmer
+            idx //= self.N_BASE
+        kmer = ab_dict[idx%self.N_BASE] + kmer
+        kmer = ab_dict[0]*(self.K-len(kmer)) + kmer              
+        return kmer
+            
     @property
     def mse_loss(self):
         if self.config.DECODER['USE_STD']:
             pass #TODO: Implement the std version.
         else:
             return nn.MSELoss(reduction= 'none')
+    
+    def save_embedding(self,alphabeta = 'ACGTM'):
+        embedding = self.level_embedding.weight.detach().cpu().squeeze(1).numpy()
+        ab_dict = {i:x for i,x in enumerate(alphabeta)}
+        with open(self.config.PORE_MODEL['PORE_MODEL_F'],'w+') as f:
+            f.write("kmer\tlevel_mean\n")
+            for i,e in enumerate(embedding[1:]):
+                f.write("%s\t%.6f\n"%(self.idx2kmer(i,ab_dict = ab_dict),e))
     
 if __name__ == "__main__":
     config = CONFIG()
@@ -576,3 +557,4 @@ if __name__ == "__main__":
     mm_decoder = MM(mm_config)
     mm_rc = mm_decoder.forward(output.permute([1,2,0]))
     print("MM Reconstructed:",mm_rc.shape)
+    mm_decoder.save_embedding()

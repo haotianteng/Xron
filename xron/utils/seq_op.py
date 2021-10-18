@@ -30,9 +30,11 @@ def raw2seq(raw:ndarray, blank_symbol:int = 0)->List[ndarray]:
     """
     mask = np.diff(raw).astype(bool)
     mask = np.insert(mask,0,True,axis = 1)
+    moves = np.logical_and(raw!=blank_symbol,mask)
     np.ma.array(raw,mask = mask).tolist()
     seqs = np.ma.array(raw,mask = np.logical_not(mask)).tolist(None)
-    return [[x-1 for x in seq if x is not None and x!=blank_symbol] for seq in seqs]
+    out_seqs = [[x-1 for x in seq if x is not None and x!=blank_symbol] for seq in seqs]
+    return out_seqs,moves
 
 
 def list2string(input_v, base_type):
@@ -66,7 +68,7 @@ def fast5_iter(fast5_dir,mode = 'r'):
             abs_path = os.path.join(dirpath,filename)
             try:
                 root = h5py.File(abs_path,mode = mode)
-            except OSError as e:
+            except Exception as e:
                 print("Reading %s failed due to %s."%(abs_path,e))
                 continue
             for read_id in root:
@@ -86,11 +88,32 @@ def med_mad(x, factor=1.4826):
     return med, mad
 
 
-def norm_by_noisiest_section(signal, samples=100, threshold=6.0):
+def norm_by_noisiest_section(signal, samples=100, threshold=6.0,offset = 0.0):
     """
     Normalise using the medmad from the longest continuous region where the
     noise is above some threshold relative to the std of the full signal.This
     function is borrowed from Bonito Basecaller.
+
+    Parameters
+    ----------
+    signal : 1-D np.array
+        A 1D numpy array contain signal from one read.
+    samples : Int, optional
+        The window size. The default is 100.
+    threshold : Float, optional
+        Signal with std over threshold are used to find the peaks. The default is 6.0.
+    offset : Float, optional
+        The offset to apply to the signal. The default is 0.0.
+
+    Returns
+    -------
+    normalized_signal: 1-D array
+        The normalized signal.
+    med : Float
+        The median value.
+    mad : Float
+        The MAD value estimate the deviation of the signal.
+
     """
     threshold = signal.std() / threshold
     noise = np.ones(signal.shape)
@@ -108,4 +131,49 @@ def norm_by_noisiest_section(signal, samples=100, threshold=6.0):
         med, mad = med_mad(signal[info['left_bases'][widest]: info['right_bases'][widest]])
     else:
         med, mad = med_mad(signal)
-    return (signal - med) / mad, med, mad
+    return (signal - med + offset) / mad, med, mad
+
+def diff_norm_by_noisiest_section(signal, samples=100, threshold=6.0,offset = 0.0):
+    """
+    Calculate the difference of the signal S[1:]-S[:-1], scale the
+    diff signal with the MAD value that extracted with the same method as
+    norm_by_noisiest_section function.
+
+    Parameters
+    ----------
+    signal : 1-D np.array
+        A 1D numpy array contain signal from one read.
+    samples : Int, optional
+        The window size. The default is 100.
+    threshold : Float, optional
+        Signal with std over threshold are used to find the peaks. The default is 6.0.
+    offset : Float, optional
+        The offset to apply to the signal. The default is 0.0.
+
+    Returns
+    -------
+    normalized_signal: 1-D array
+        The differentiable normalized signal.
+    med : Float
+        The median value.
+    mad : Float
+        The MAD value estimate the deviation of the signal.
+
+    """
+    threshold = signal.std() / threshold
+    noise = np.ones(signal.shape)
+
+    for idx in np.arange(signal.shape[0] // samples):
+        window = slice(idx * samples, (idx + 1) * samples)
+        noise[window] = np.where(signal[window].std() > threshold, 1, 0)
+
+    # start and end low for peak finding
+    noise[0] = 0; noise[-1] = 0
+    peaks, info = find_peaks(noise, width=(None, None))
+    diff_signal = signal[1:] - signal[:-1]
+    if len(peaks):
+        widest = np.argmax(info['widths'])
+        med, mad = med_mad(diff_signal[info['left_bases'][widest]: info['right_bases'][widest]])
+    else:
+        med, mad = med_mad(diff_signal)
+    return (diff_signal + offset) / mad, med, mad
