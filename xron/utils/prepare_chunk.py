@@ -7,6 +7,7 @@ Created on Wed Apr 28 23:03:36 2021
 import os
 import sys
 import h5py
+import toml
 import numpy as np
 import argparse
 import seaborn as sns
@@ -129,6 +130,11 @@ def extract(args):
         seq_lens = np.array(seq_lens)
         np.save(os.path.join(args.output,'seqs.npy'),seqs)
         np.save(os.path.join(args.output,'seq_lens.npy'),seq_lens)
+    config_file = os.path.join(args.output,'config.toml')
+    config_modules = [x for x in args.__dir__() if not x .startswith('_')][::-1]
+    config_dict = {x:getattr(args,x) for x in config_modules}
+    with open(config_file,'w+') as f:
+        toml.dump(config_dict,f)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(prog='xron',   
