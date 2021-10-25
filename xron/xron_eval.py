@@ -15,7 +15,7 @@ from functools import partial
 from tqdm import tqdm
 from xron.xron_model import CRNN, CONFIG
 from xron.xron_train_base import load_config
-from xron.utils.seq_op import raw2seq,fast5_iter,norm_by_noisiest_section,list2string
+from xron.utils.seq_op import raw2seq,fast5_iter,norm_by_noisiest_section,diff_norm_by_noisiest_section,list2string
 from xron.utils.easy_assembler import simple_assembly_qs
 from itertools import groupby 
 
@@ -42,7 +42,10 @@ def chunk_feeder(fast5_f,config):
     chunks,meta_info = [],[]
     for read_h,signal,fast5_f,read_id in tqdm(iterator):
         read_len = len(signal)
-        signal = norm_by_noisiest_section(signal,offset = offset)[0].astype(np.float16)
+        if config.EVAL['diff_norm']:
+            signal = diff_norm_by_noisiest_section(signal)[0].astype(np.float16)
+        else:
+            signal = norm_by_noisiest_section(signal,offset = offset)[0].astype(np.float16)
         if config.CTC['mode'] == "rna":
             signal = signal[::-1]
         current_chunks = np.split(signal,np.arange(0,read_len,chunk_len))[1:]
@@ -209,7 +212,8 @@ def main(args):
                 'assembly_method':args.assembly_method,
                 'seq_batch':4000,
                 'format':'fast5' if args.fast5 else 'fastq',
-                'offset':args.offset}
+                'offset':args.offset,
+                'diff_norm':args.diff_norm}
     config = CALL_CONFIG()
     print("Construct and load the model.")
     model_f = args.model_folder
@@ -292,6 +296,8 @@ if __name__ == "__main__":
                         help = "Assembly method used, can be glue, global, simple and stick.")
     parser.add_argument('--offset',type = float,default = 0.0,
                         help = "Manual set a offset to the normalized signal.")
+    parser.add_argument('--no_diff_norm', action="store_false", dest="diff_norm",
+                        help = "Turn off the default differential normalization.")
     args = parser.parse_args(sys.argv[1:])
     MEMORY_PER_BATCH_PER_SIGNAL=13430. #KB
     t = torch.cuda.get_device_properties(0).total_memory
