@@ -35,17 +35,27 @@ def std_plot(errors:list,axs,**plot_args):
     return axs
 
 if __name__ == "__main__":
-    prefix = "/home/heavens/bridge_scratch/Xron_models_control/xron_model_supervised_control_dataset_%d_%s_16G"
-    adam_fs = [prefix%(x,'Adam') for x in np.arange(4)]    
-    sgd_fs = [prefix%(x,'SGD') for x in np.arange(4)]    
-    momentum_fs = [prefix%(x,'Momentum') for x in np.arange(4,8,1)]
-    adagrad_fs = [prefix%(x,'Adagrad') for x in np.arange(4,8,1)]    
-    colors = ['r','g','b','yellow']
-    opts = ['Adam','SGD','Momentum','Adagrad']
+    ### Plot multiple optimizers training result
+    # prefix = "/home/heavens/bridge_scratch/Xron_models_control/xron_model_supervised_control_dataset_%d_%s_16G"
+    # adam_fs = [prefix%(x,'Adam') for x in np.arange(4)]    
+    # sgd_fs = [prefix%(x,'SGD') for x in np.arange(4)]    
+    # momentum_fs = [prefix%(x,'Momentum') for x in np.arange(4,8,1)]
+    # adagrad_fs = [prefix%(x,'Adagrad') for x in np.arange(4,8,1)]    
+    # colors = ['r','g','b','yellow']
+    # opts = ['Adam','SGD','Momentum','Adagrad']
+    # fs = [adam_fs,sgd_fs,momentum_fs,adagrad_fs]
+    
+    ### Plot single training error
+    opts = ['Adagrad']
+    colors = ['r']
+    fs = [['/home/heavens/bridge_scratch/Xron_models_merge_d/xron_model_supervised_control_dataset_Adagrad_16G']]
+    
     axs = plt.subplot()
-    for f,c,opt in zip([adam_fs,sgd_fs,momentum_fs,adagrad_fs],colors,opts):
+    for f,c,opt in zip(fs,colors,opts):
         errors = watch_errors(f)
         std_plot(errors,axs,color = c,label = opt, alpha = .2)
     plt.legend()
     axs.set_xlabel("Training step")
     axs.set_ylabel("Editdistance/Sequence Length")
+    
+    prefix = "/home/heavens/bridge_scratch/Xron_models_merge_d/xron_model_supervised_control_dataset_Adagrad_16G"
