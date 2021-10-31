@@ -177,3 +177,30 @@ def diff_norm_by_noisiest_section(signal, samples=100, threshold=6.0,offset = 0.
     else:
         med, mad = med_mad(diff_signal)
     return (diff_signal + offset) / mad, med, mad
+
+def diff_norm_fixing_deviation(signal, deviation = 100.0, offset = 0.0):
+    """
+    Return the differential signal by fixed value: (x_i-x_{i-1})/deviation
+
+    Parameters
+    ----------
+    signal : 1-D np.array
+        A 1D numpy array contain signal from one read.
+    deviation: Float, optiona
+        Scale the signal by 1/deviation.
+    offset : Float, optional
+        The offset to apply to the signal. The default is 0.0.
+
+    Returns
+    -------
+    normalized_signal: 1-D array
+        The differentiable normalized signal.
+    med : Float
+        The median value.
+    mad : Float
+        The MAD value estimate the deviation of the signal.
+
+    """
+    diff_signal = (signal[1:] - signal[:-1])/deviation
+    med, mad = med_mad(diff_signal)
+    return diff_signal + offset, med, mad

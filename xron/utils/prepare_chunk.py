@@ -12,7 +12,7 @@ import numpy as np
 import argparse
 import seaborn as sns
 from tqdm import tqdm
-from xron.utils.seq_op import fast5_iter,norm_by_noisiest_section,diff_norm_by_noisiest_section
+from xron.utils.seq_op import fast5_iter,norm_by_noisiest_section,diff_norm_by_noisiest_section,diff_norm_fixing_deviation
 from xron.utils.align import MetricAligner
 from Bio.Seq import Seq
 alt_map = {'ins':'0','M':'A','U':'T'}
@@ -38,7 +38,13 @@ def retrive_seq(seq_h,event_stride):
 
 def extract(args):
     iterator = fast5_iter(args.input_fast5,mode = 'r')
-    norm_func = diff_norm_by_noisiest_section if args.diff_sig else norm_by_noisiest_section
+    if args.diff_sig:
+        if args.config['fixed_deviation']:
+            norm_func = diff_norm_fixing_deviation
+        else:
+            norm_func = diff_norm_by_noisiest_section
+    else:
+        norm_func = norm_by_noisiest_section
     if args.extract_seq:
         print("Read reference genome.")
         aligner = MetricAligner(args.reference,options = '-x ont2d')
@@ -180,7 +186,8 @@ if __name__ == "__main__":
     FLAGS = parser.parse_args(sys.argv[1:])
     XRON_CONFIG = {"stride":5,
                    "differential_signal":True,
-                   "forward_move_matrix":False} #If the move matrix is count on reverse signal or forward signal.
+                   "forward_move_matrix":False,#If the move matrix is count on reverse signal or forward signal.
+                   "fixed_deviation":True} 
     GUPPY_CONFIG = {"stride":10,
                     "forward_move_matrix":True,
                     "differential_signal":False}
@@ -194,6 +201,7 @@ if __name__ == "__main__":
     FLAGS.stride = config["stride"]
     FLAGS.rev_move = config["forward_move_matrix"]
     FLAGS.diff_sig = config["differential_signal"]
+    FLAGS.config = config
     if FLAGS.extract_seq:
         if not FLAGS.reference:
             raise ValueError("Reference genome is required when extract the \
