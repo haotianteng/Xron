@@ -73,7 +73,7 @@ class VAETrainer(Trainer):
         self.awake = False
         self.score_average = 0
         self.records = {'rc_losses':[],
-                        'rc_losses_encoder':[],
+                        'rc_different':[],
                         'entropy_losses':[],
                         'alignment_score':[],
                         'valid_alignment':[]}
@@ -116,7 +116,7 @@ class VAETrainer(Trainer):
         for epoch_i in range(epoches):
             for i_batch, batch in enumerate(self.train_ds):
                 if self.global_step < preheat:
-                    self.epsilon = 1
+                    self.epsilon = 0
                 else:
                     self.epsilon = max(1+(self.global_step - preheat)*e_decay,epsilon)
                 losses = self.train_step(batch)
@@ -131,7 +131,7 @@ class VAETrainer(Trainer):
                 opt_d.zero_grad()
                 losses[-3].backward()
                 opt_d.step()
-                if self.global_step < preheat:
+                if self.global_step > preheat:
                     losses = self.train_step(batch)
                     loss = -alpha*losses[0]+beta*losses[1]+gamma*losses[2] #Maximize -H(q), minimize -(cross entropy loss)
                     opt_e.zero_grad()
@@ -144,9 +144,10 @@ class VAETrainer(Trainer):
                     valid_error,valid_perm = self.valid_step(valid_batch)
                     records['entropy_losses'].append(losses[0].detach().cpu().numpy()[()])
                     records['valid_alignment'].append(valid_error)
-                    print("Epoch %d Batch %d, entropy_loss %f, rc_loss %f, encod valid_error %f, perm:%s, alignment_loss %f"%(epoch_i, i_batch, losses[0], losses[3], valid_error, valid_perm, losses[2]))
+                    print("Epoch %d Batch %d, entropy_loss %f, rc_loss %f, encoded valid_error %f, perm:%s, alignment_loss %f"%(epoch_i, i_batch, losses[0], losses[3], valid_error, valid_perm, losses[2]))
                     records['alignment_score'].append(losses[2].detach().cpu().numpy()[()])
-                    records['rc_losses_encoder'].append(losses[1].detach().cpu().numpy()[()])
+                    records['rc_different'].append(losses[1].detach().cpu().numpy()[()])
+                    records['rc_losses'].append(losses[3].detach().cpu().numpy()[()])
                     self._update_records()
                 losses = None
                 torch.nn.utils.clip_grad_norm_(self.parameters, 
@@ -170,20 +171,21 @@ class VAETrainer(Trainer):
         rc_mm = mm.forward(sampling,device = self.device).permute([0,2,1]) #[N,L,C] -> [N,C,L]
         rc_revcnn = decoder.forward(sampling).permute([0,2,1]) #[N,L,C] -> [N,C,L]
         rc_signal = rc_mm+rc_revcnn
+        if self.config.TRAIN['diff_signal']:
+            pass
+            #TODO implement the encoder to reconstruct diffrential signal.
         mse_combine = decoder.mse_loss(rc_signal,signal)
         mse_mm = decoder.mse_loss(rc_mm,signal)
-        entropy_loss = decoder.entropy_loss(logprob.permute([1,2,0]),sampling.max(dim = 1)[1])
+        sample_logprob = torch.sum(logprob.permute([1,2,0])*sampling,axis = (1,2))
+        entropy_loss = torch.mean(sample_logprob**2)
         raw_seq = torch.argmax(sampling,dim = 1)
         critic_loss = torch.mean(critic.mse_loss(mse_combine.detach(),mse_predict))
 
-        sample_logprob = torch.sum(logprob.permute([1,2,0])*sampling,axis = (1,2))
         rc_loss = torch.mean(torch.mean(mse_combine - mse_predict.detach(),axis = (1,2))*sample_logprob)
         decoder_loss_combine = torch.mean(mse_combine)
         decoder_loss_mm = torch.mean(mse_mm)
 
-        # print(torch.mean(mse_loss,axis = (1,2)))
-        # print(sample_logprob)
-        # ### Train with aligner
+        ### Train with aligner
         # identities,perm = self.aligner.permute_align(raw_seq.cpu().detach().numpy())
         # score = np.mean(identities,axis = 1)
         # best_perm = np.argmax(score)
@@ -226,12 +228,13 @@ def main(args):
                  "grad_norm":2,
                  "epsilon":0.1,
                  "epsilon_decay":0,
-                 "alpha":0.1, #Entropy loss scale factor
+                 "alpha":0.01, #Entropy loss scale factor
                  "beta": 1., #Reconstruction loss scale factor
                  "gamma":0, #Alignment loss scale factor
                  "preheat":5000,
                  "keep_record":5,
-                 "decay":args.decay,}
+                 "decay":args.decay,
+                 "diff_signal":args.diff}
         
     config = TRAIN_CONFIG()
     config.PORE_MODEL["N_BASE"] = len(config.CTC["alphabeta"])
@@ -269,7 +272,7 @@ def main(args):
     aligner = MetricAligner(args.reference)
     t = VAETrainer(loader,encoder,critic,decoder,mm,config,aligner)
     if args.pretrain_encoder:
-        t.load(args.pretrain_encoder)
+        t.load(args.pretrain_encoder,update_global_step = False)
     if args.retrain:
         t.load(model_f)
     lr = args.lr
@@ -281,7 +284,6 @@ def main(args):
     COUNT_CYCLE = args.report
     print("Begin training the model.")
     t.train(epoches,[opt_e,opt_c,opt_mm,opt_revcnn],COUNT_CYCLE,model_f)
-    
         
         
 if __name__ == "__main__":
@@ -313,6 +315,8 @@ if __name__ == "__main__":
                         help='Load existed model.')
     parser.add_argument('--decay', type = float, default = 0.99,
                         help="The decay factor of the moving average.")
+    parser.add_argument('--diffSig',action="store_true",dest = "diff",
+                        help="If the input chunks are diffrential signal.")
     args = parser.parse_args(sys.argv[1:])
     if not os.path.isdir(args.model_folder):
         os.mkdir(args.model_folder)
