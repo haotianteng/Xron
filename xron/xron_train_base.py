@@ -116,12 +116,13 @@ class Trainer(object):
         with open(config_file,'w+') as f:
             toml.dump(config_dict,f)
     
-    def load(self,save_folder):
+    def load(self,save_folder,update_global_step = True):
         self.save_folder = save_folder
         ckpt_file = os.path.join(save_folder,'checkpoint')
         with open(ckpt_file,'r') as f:
             latest_ckpt = f.readline().strip().split(':')[1]
-            self.global_step = int(latest_ckpt.split('-')[1])
+            if update_global_step:
+                self.global_step = int(latest_ckpt.split('-')[1])
         ckpt = torch.load(os.path.join(save_folder,latest_ckpt),
                           map_location=self.device)
         for key,net in ckpt.items():

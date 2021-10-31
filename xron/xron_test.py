@@ -80,7 +80,7 @@ if __name__ == "__main__":
     print("Load model.")
     config = load_config(os.path.join(args.model_folder,'config.toml'))
     stride = config.CNN['Layers'][-1]['stride']
-    config.EVALUATION = {"batch_size":200,
+    config.EVALUATION = {"batch_size":100,
                          "device":args.device}
     encoder = CRNN(config)
     revcnn = REVCNN(config) if 'CNN_DECODER' in config.__dict__.keys() else None
