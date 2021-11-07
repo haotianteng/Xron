@@ -173,9 +173,9 @@ def diff_norm_by_noisiest_section(signal, samples=100, threshold=6.0,offset = 0.
     diff_signal = signal[1:] - signal[:-1]
     if len(peaks):
         widest = np.argmax(info['widths'])
-        med, mad = med_mad(diff_signal[info['left_bases'][widest]: info['right_bases'][widest]])
+        med, mad = med_mad(signal[info['left_bases'][widest]: info['right_bases'][widest]])
     else:
-        med, mad = med_mad(diff_signal)
+        med, mad = med_mad(signal)
     return (diff_signal + offset) / mad, med, mad
 
 def diff_norm_fixing_deviation(signal, deviation = 100.0, offset = 0.0):
