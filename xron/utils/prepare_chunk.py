@@ -69,7 +69,7 @@ def extract(args):
             if seq.count('A')+seq.count('M') == 0:
                 meths.append(np.nan)
             else:
-                meths.append(seq.count('M')/(seq.count('A')+seq.count('M')+1e-6))
+                meths.append(seq.count('M')/(seq.count('A')+seq.count('M')+1e-8))
             seq = clean_repr(seq) #M->A, U->T
             hits,ref_seq,ref_idx = aligner.ref_seq(seq)
             if not hits:
@@ -108,6 +108,8 @@ def extract(args):
                     # print("Aligned seqeuence:%s"%(seq))
                     if args.mode == 'rna-meth':
                         seq.replace('A','M')
+                    elif args.mode == 'rna':
+                        seq.replace('M','A')
                     seqs.append(seq)
                 else:
                     seqs.append('')
