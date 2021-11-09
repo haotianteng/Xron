@@ -51,13 +51,14 @@ def load_data(prefix:str)->Tuple[np.array,Iterable,np.array,np.array,np.array]:
     return chunk,seq,seq_lens,mms,mms_full
 
 def main(args):
-    chunk_all,seq_all,seq_len_all = [],[],[]
+    chunk_m,seq_m,seq_len_m= [],[],[]
     print("Read control dataset.")
     chunk_c,seq_c,seq_lens_c,mms_c,mms_full_c= load_data(args.control)
-    chunk_all.append(chunk_c)
-    seq_all.append(seq_c)
-    seq_len_all.append(seq_lens_c)
+    # chunk_all.append(chunk_c)
+    # seq_all.append(seq_c)
+    # seq_len_all.append(seq_lens_c)
     print("Read methylation dataset.")
+    m_size = 0
     for i,m in enumerate(args.meth):
         chunk,seq,seq_lens,mms,mms_full = load_data(m)
         print("Transfer sequence into methylation.")
@@ -66,14 +67,21 @@ def main(args):
             offset = np.mean(mms_c[1,:])-np.mean(mms[1,:])
             offset /= mms_full[0,:]
             chunk += offset[:,None]
-        chunk_all.append(chunk)
-        seq_all.append(seq)
-        seq_len_all.append(seq_lens)
+        chunk_m.append(chunk)
+        seq_m.append(seq)
+        seq_len_m.append(seq_lens)
+        m_size += chunk.shape[0]
         print(" Methylation %d dataset shape:%d"%(i+1,chunk.shape[0]))
-    print("Control dataset shape:%d"%(chunk_c.shape[0]))
-    chunk_all = np.concatenate(chunk_all,axis = 0)
-    seq_all = np.concatenate(seq_all,axis = 0)
-    seq_lens_all = np.concatenate(seq_len_all,axis = 0)
+    print("Control dataset size:%d"%(chunk_c.shape[0]))
+    print("Methylation datasets total size:%d"%(m_size))
+    min_n = min(chunk_c.shape[0],m_size)
+    chunk_m = np.concatenate(chunk_m,axis = 0)
+    seq_m = np.concatenate(seq_m,axis = 0)
+    seq_len_m = np.concatenate(seq_len_m,axis = 0)
+    chunk_c,seq_c,seq_lens_c,chunk_m,seq_m,seq_len_m = chunk_c[:min_n],seq_c[:min_n],seq_lens_c[:min_n],chunk_m[:min_n],seq_m[:min_n],seq_len_m[:min_n]
+    chunk_all = np.concatenate([chunk_m,chunk_c],axis = 0)
+    seq_all = np.concatenate([seq_m,seq_c],axis = 0)
+    seq_lens_all = np.concatenate([seq_len_m,seq_lens_c],axis = 0)
     out_f = args.output
     print("Save the merged dataset.")
     os.makedirs(out_f,exist_ok = True)

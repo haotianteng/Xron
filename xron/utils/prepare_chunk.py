@@ -185,11 +185,14 @@ if __name__ == "__main__":
     parser.add_argument('--mode',
                         default = "rna",
                         help = "Can be one of this mode: rna, dna, rna-meth")
+    parser.add_argument('--fix_d',action="store_true",
+                        dest = "fix_d",
+                        help = "Use a fix deviation to normalize the signal.")
     FLAGS = parser.parse_args(sys.argv[1:])
     XRON_CONFIG = {"stride":5,
                    "differential_signal":True,
                    "forward_move_matrix":False,#If the move matrix is count on reverse signal or forward signal.
-                   "fixed_deviation":True} 
+                   "fixed_deviation":FLAGS.fix_d} 
     GUPPY_CONFIG = {"stride":10,
                     "forward_move_matrix":True,
                     "differential_signal":False}
