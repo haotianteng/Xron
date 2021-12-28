@@ -23,12 +23,12 @@ module_dict = {'Res1d':xron.nn.Res1d,
 # PORE_MODEL_F = "pore_models/5mer_level_table.model"
 PORE_MODEL_F = "pore_models/m6A_5mer_level.model"
 N_BASE = 5 #AGCTM
-
+EMBEDDING_SIZE = 128
 class CNN_CONFIG(object):
     CNN = {'N_Layer':3,
-           'Layers': [{'layer_type':'Res1d','kernel_size':5,'stride':1,'out_channels':4},
-                      {'layer_type':'Res1d','kernel_size':5,'stride':1,'out_channels':16},
-                      {'layer_type':'Res1d','kernel_size':19,'stride':5,'out_channels':768}]
+           'Layers': [{'layer_type':'Res1d','kernel_size':5,'stride':1,'out_channels':32},
+                      {'layer_type':'Res1d','kernel_size':5,'stride':1,'out_channels':64},
+                      {'layer_type':'Res1d','kernel_size':19,'stride':5,'out_channels':EMBEDDING_SIZE}]
         }
 class RNN_CONFIG(CNN_CONFIG):
     RNN = {'layer_type':'BidirectionalRNN','hidden_size':768,'cell_type':'LSTM','num_layers':3}
@@ -61,7 +61,8 @@ class CRITIC_CONFIG(CRITIC_FNN):
 module_dict['RevRes1d'] = xron.nn.RevRes1d
 
 class DECODER_CONFIG(CONFIG):
-    CNN_DECODER = {'N_Layer':3,
+    CNN_DECODER = {'Input_Shape':EMBEDDING_SIZE,
+              'N_Layer':3,
               'Layers': [{'layer_type':'RevRes1d','kernel_size':15,'stride':5,'out_channels':32},
                          {'layer_type':'RevRes1d','kernel_size':5,'stride':1,'out_channels':32},
                          {'layer_type':'RevRes1d','kernel_size':5,'stride':1,'out_channels':32}]
@@ -73,7 +74,8 @@ class DECODER_CONFIG(CONFIG):
 class MM_CONFIG(DECODER_CONFIG):
     PORE_MODEL = {"PORE_MODEL_F":PORE_MODEL_F,
                   "N_BASE": N_BASE, #for AGCT is 4, for AGCTM is 5
-                  "K" : 5,
+                  "K" : 4,
+                  "EMBEDDING_SIZE":EMBEDDING_SIZE,
                   "LOAD": False} #If load the pretrain pore model.
     DECODER = {"X_UPSAMPLING":5, #The scale factor of upsampling.
                "USE_STD":False}
@@ -171,7 +173,12 @@ class CRNN(BASE):
         log_softmax = nn.LogSoftmax(dim = 2)
         self.net = nn.Sequential(*cnn,permute,*rnn,*fnn,log_softmax)
         self.ctc = nn.CTCLoss(zero_infinity = False)
-        
+    
+    def forward_wo_fnn(self,batch):
+        for layer in self.net[:self.config.CNN["N_Layer"]]:
+            batch = layer(batch)
+        return batch
+    
     def ctc_loss(self,
                  posterior:Tensor,
                  posterior_len:Tensor,
@@ -429,8 +436,8 @@ class REVCNN(BASE):
         """
         super().__init__()
         self.config = config
-        self.n_base = config.FNN['Layers'][-1]['out_features']
-        cnn = self._make_cnn(config.CNN_DECODER, in_channels = self.n_base)
+        self.embedding_size = config.CNN_DECODER['Input_Shape']
+        cnn = self._make_cnn(config.CNN_DECODER, in_channels = self.embedding_size)
         permute = xron.nn.Permute([0,2,1]) #[N,C,L] -> [N,L,C]
         fnn = self._make_fnn(config.FNN_DECODER.copy(),
                              in_channels = config.CNN_DECODER['Layers'][-1]['out_channels'])
@@ -456,6 +463,7 @@ class MM(nn.Module):
         self.config = config
         self.N_BASE = self.config.PORE_MODEL['N_BASE']
         self.K = self.config.PORE_MODEL['K']
+        self.embedding_size = self.config.PORE_MODEL["EMBEDDING_SIZE"]
         if config.PORE_MODEL['LOAD']:
             self.pore_model = pd.read_csv(config.PORE_MODEL['PORE_MODEL_F'],
                                           delimiter = '\t')
@@ -465,7 +473,9 @@ class MM(nn.Module):
                                                                 freeze = False,
                                                                 padding_idx=0)
         else:
-            self.level_embedding = nn.Embedding((self.N_BASE)**self.K+1,1,padding_idx = 0)
+            n_embd = (self.N_BASE)**self.K+1
+            self.level_embedding = nn.Embedding(n_embd,self.embedding_size)
+            self.level_embedding.weight.data.uniform_(-1./n_embd, 1./n_embd)
         self.upsampling = torch.nn.Upsample(scale_factor=config.DECODER['X_UPSAMPLING'],
                                      mode = 'nearest')
         self.entropy_loss = nn.CrossEntropyLoss()

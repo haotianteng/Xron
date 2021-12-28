@@ -188,9 +188,12 @@ if __name__ == "__main__":
     parser.add_argument('--fix_d',action="store_true",
                         dest = "fix_d",
                         help = "Use a fix deviation to normalize the signal.")
+    parser.add_argument('--diff_sig',action = "store_true",
+                        dest = "chiron_diff_sig",
+                        help = "If we extract the differential signal for chiron.")
     FLAGS = parser.parse_args(sys.argv[1:])
     XRON_CONFIG = {"stride":5,
-                   "differential_signal":True,
+                   "differential_signal":FLAGS.chiron_diff_sig,
                    "forward_move_matrix":False,#If the move matrix is count on reverse signal or forward signal.
                    "fixed_deviation":FLAGS.fix_d} 
     GUPPY_CONFIG = {"stride":10,

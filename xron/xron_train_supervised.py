@@ -144,7 +144,7 @@ def main(args):
                  "batch_size":args.batch_size,
                  "grad_norm":2,
                  "keep_record":5,
-                 "eval_size":100000,
+                 "eval_size":10000,
                  "optimizer":optimizers[args.optimizer]}
     config = TRAIN_CONFIG()
     print("Read chunks and sequence.")
