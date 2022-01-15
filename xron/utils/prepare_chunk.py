@@ -15,9 +15,16 @@ from tqdm import tqdm
 from xron.utils.seq_op import fast5_iter,norm_by_noisiest_section,diff_norm_by_noisiest_section,diff_norm_fixing_deviation
 from xron.utils.align import MetricAligner
 from Bio.Seq import Seq
+from functools import partial
 alt_map = {'ins':'0','M':'A','U':'T'}
 complement = {'A': 'T', 'C': 'G', 'G': 'C', 'T': 'A'} 
+RNA_FILTER_CONFIG = {"min_rate":10,
+                     "min_seq_len":5,
+                     "max_mono_prop":0.75}
 
+DNA_FILTER_CONFIG = {"min_rate":2,
+                     "min_seq_len":7,
+                     "max_mono_prop":0.8}
 def reverse_complement(seq):    
     return str(Seq(seq).reverse_complement())
 
@@ -35,6 +42,28 @@ def retrive_seq(seq_h,event_stride):
     pos = np.repeat(np.cumsum(moves)-1,repeats = event_stride).astype(np.int32)
     return seq,pos
     
+def filt(filt_config,chunks,seq,seq_len):
+    n = chunks.shape[0]
+    segment_len = chunks.shape[1]
+    print("Origin %d chunks in total."%(chunks.shape[0]))
+    
+    ### Filter out by length
+    max_seq_len = np.int(segment_len/filt_config['min_rate'])
+    mask_min = seq_len>filt_config["min_seq_len"]
+    mask_max = seq_len<max_seq_len
+    mask = np.logical_and(mask_min,mask_max)
+    print("%.2f"%(100*sum(np.logical_not(mask_min))/chunks.shape[0]),"% chunks are filted out by minimum sequence length filter.")
+    print("%.2f"%(100*sum(np.logical_not(mask_max))/chunks.shape[0]),"% chunks are filted out by maximum sequence length filter.")
+    ### FIlter out by monopolization
+    mono_mask = [max(np.unique(list(x),return_counts = True)[1])/y<filt_config['max_mono_prop'] for x,y in zip(seq[mask],seq_len[mask])]
+    print("%.2f"%(100*sum(np.logical_not(mono_mask))/sum(mask)),"% chunks are filted out by mono filter.")
+    return chunks[mask][mono_mask],seq[mask][mono_mask],seq_len[mask][mono_mask]
+    
+def rna_filt(chunks,seq,seq_len):
+    return partial(filt,RNA_FILTER_CONFIG)(chunks,seq,seq_len)
+
+def dna_filt(chunks,seq,seq_len):
+    return partial(filt,DNA_FILTER_CONFIG)(chunks,seq,seq_len)
 
 def extract(args):
     iterator = fast5_iter(args.input_fast5,mode = 'r')
@@ -120,14 +149,13 @@ def extract(args):
         current_chunks[-1]= np.pad(last_chunk,(0,args.chunk_len-len(last_chunk)),'constant',constant_values = (0,0))
         chunks += current_chunks
         meta_info += [(fast5_f,read_id,str(args.chunk_len),str(args.stride))]*len(current_chunks)
-        if args.max_n and len(chunks)>args.max_n:
+        if args.max_n and (args.max_n > 0) and (len(chunks)>args.max_n):
             chunks = chunks[:args.max_n]
             seqs = seqs[:args.max_n]
             meta_info = meta_info[:args.max_n]
             break
     chunks = np.stack(chunks,axis = 0)
     np.savetxt(os.path.join(args.output,'meta.csv'),meta_info,fmt="%s")
-    np.save(os.path.join(args.output,'chunks.npy'),chunks)
     print("Average median value %f"%(np.mean(meds)))
     print("Average median absolute deviation %f"%(np.mean(mads)))
     print("Average methylation proportion %f"%(np.nanmean(meths)))
@@ -136,8 +164,11 @@ def extract(args):
         seq_lens = [len(i) for i in seqs]
         seqs = np.array(seqs)
         seq_lens = np.array(seq_lens)
+        filt_func = dna_filt if args.mode == "dna" else rna_filt
+        chunks,seqs,seq_lens = filt_func(chunks,seqs,seq_lens)
         np.save(os.path.join(args.output,'seqs.npy'),seqs)
         np.save(os.path.join(args.output,'seq_lens.npy'),seq_lens)
+    np.save(os.path.join(args.output,'chunks.npy'),chunks)
     config_file = os.path.join(args.output,'config.toml')
     config_modules = [x for x in args.__dir__() if not x .startswith('_')][::-1]
     config_dict = {x:getattr(args,x) for x in config_modules}

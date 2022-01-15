@@ -11,13 +11,6 @@ import torch.utils.data as data
 from torchvision import transforms
 from matplotlib import pyplot as plt
 from typing import Dict,Callable
-from functools import partial
-
-RNA_FILTER_CONFIG = {"min_rate":10,
-                     "min_seq_len":5}
-
-DNA_FILTER_CONFIG = {"min_rate":2,
-                     "min_seq_len":7}
 
 class Dataset(data.Dataset):
     """
@@ -133,20 +126,6 @@ def show_sample(sample:Dict, idx = 0):
     else:
         plt.plot(signal)
 
-def filt(filt_config,chunks,seq,seq_len):
-    segment_len = chunks.shape[1]
-    print("Origin %d chunks in total."%(chunks.shape[0]))
-    max_seq_len = np.int(segment_len/filt_config['min_rate'])
-    mask = np.logical_and(seq_len>filt_config["min_seq_len"],seq_len<max_seq_len)
-    print("%d chunks after filtering."%(sum(mask)))
-    return chunks[mask],seq[mask],seq_len[mask]
-    
-def rna_filt(chunks,seq,seq_len):
-    return partial(filt,RNA_FILTER_CONFIG)(chunks,seq,seq_len)
-
-def dna_filt(chunks,seq,seq_len):
-    return partial(filt,DNA_FILTER_CONFIG)(chunks,seq,seq_len)
-
 if __name__ == "__main__":
     print("Load dataset.")
     chunks = np.load("/home/heavens/twilight_hdd1/m6A_Nanopore/6mA.zymo/191123.1.100pct/guppy_hac_extracted/chunks.npy")
@@ -155,7 +134,7 @@ if __name__ == "__main__":
     plt.hist(ref_len[ref_len<chunks.shape[1]],bins = 200)
     alphabet_dict = {'A':1,'C':2,'G':3,'T':4,'M':5}
     print("Filt dataset.")
-    chunks,reference,ref_len = filt(RNA_FILTER_CONFIG,chunks,reference,ref_len)
+    # chunks,reference,ref_len = filt(RNA_FILTER_CONFIG,chunks,reference,ref_len)
     print("Create dataset.")
     dataset = Dataset(chunks,
                       seq = reference,
