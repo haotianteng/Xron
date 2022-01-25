@@ -24,11 +24,13 @@ module_dict = {'Res1d':xron.nn.Res1d,
 PORE_MODEL_F = "pore_models/m6A_5mer_level.model"
 N_BASE = 5 #AGCTM
 EMBEDDING_SIZE = 128
+CNN_KERNAL_COMP= 19
+CNN_STRIDE = 5
 class CNN_CONFIG(object):
     CNN = {'N_Layer':3,
            'Layers': [{'layer_type':'Res1d','kernel_size':5,'stride':1,'out_channels':32},
                       {'layer_type':'Res1d','kernel_size':5,'stride':1,'out_channels':64},
-                      {'layer_type':'Res1d','kernel_size':19,'stride':5,'out_channels':EMBEDDING_SIZE}]
+                      {'layer_type':'Res1d','kernel_size':CNN_KERNAL_COMP,'stride':CNN_STRIDE,'out_channels':EMBEDDING_SIZE}]
         }
 class RNN_CONFIG(CNN_CONFIG):
     RNN = {'layer_type':'BidirectionalRNN','hidden_size':768,'cell_type':'LSTM','num_layers':3}
@@ -63,7 +65,7 @@ module_dict['RevRes1d'] = xron.nn.RevRes1d
 class DECODER_CONFIG(CONFIG):
     CNN_DECODER = {'Input_Shape':EMBEDDING_SIZE,
               'N_Layer':3,
-              'Layers': [{'layer_type':'RevRes1d','kernel_size':15,'stride':5,'out_channels':32},
+              'Layers': [{'layer_type':'RevRes1d','kernel_size':CNN_KERNAL_COMP,'stride':CNN_STRIDE,'out_channels':32},
                          {'layer_type':'RevRes1d','kernel_size':5,'stride':1,'out_channels':32},
                          {'layer_type':'RevRes1d','kernel_size':5,'stride':1,'out_channels':32}]
              }
@@ -172,10 +174,11 @@ class CRNN(BASE):
                              in_channels = config.RNN['hidden_size']*directions)
         log_softmax = nn.LogSoftmax(dim = 2)
         self.net = nn.Sequential(*cnn,permute,*rnn,*fnn,log_softmax)
+        self.embedding_layers = [layer for layer in self.net[:self.config.CNN["N_Layer"]]]
         self.ctc = nn.CTCLoss(zero_infinity = False)
     
     def forward_wo_fnn(self,batch):
-        for layer in self.net[:self.config.CNN["N_Layer"]]:
+        for layer in self.embedding_layers:
             batch = layer(batch)
         return batch
     
@@ -557,14 +560,15 @@ if __name__ == "__main__":
     batch_size = 88
     chunk_len = 2000
     test_batch = torch.randn(batch_size,1,chunk_len)
-    output = encoder.forward(test_batch)
-    print("Input: ",test_batch.shape,"Encoded: ",output.shape)
+    embedding = encoder.forward_wo_fnn(test_batch)
+    print("Input: ",test_batch.shape,"Encoded: ",embedding.shape)
     decoder_config = DECODER_CONFIG()
     decoder = REVCNN(decoder_config)
-    rc = decoder.forward(output.permute([1,2,0])).permute([0,2,1])
+    rc = decoder.forward(embedding).permute([0,2,1])
     print("Reconstructed:",rc.shape)
-    mm_config = MM_CONFIG()
-    mm_decoder = MM(mm_config)
-    mm_rc = mm_decoder.forward(output.permute([1,2,0]))
-    print("MM Reconstructed:",mm_rc.shape)
-    mm_decoder.save_embedding()
+    # output = encoder.forward(test_batch)
+    # mm_config = MM_CONFIG()
+    # mm_decoder = MM(mm_config)
+    # mm_rc = mm_decoder.forward(output.permute([1,2,0]))
+    # print("MM Reconstructed:",mm_rc.shape)
+    # mm_decoder.save_embedding()

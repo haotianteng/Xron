@@ -20,7 +20,7 @@ alt_map = {'ins':'0','M':'A','U':'T'}
 complement = {'A': 'T', 'C': 'G', 'G': 'C', 'T': 'A'} 
 RNA_FILTER_CONFIG = {"min_rate":10,
                      "min_seq_len":5,
-                     "max_mono_prop":0.75}
+                     "max_mono_prop":0.6}
 
 DNA_FILTER_CONFIG = {"min_rate":2,
                      "min_seq_len":7,
@@ -108,18 +108,18 @@ def extract(args):
                 start = int(read_h['Analyses/Segmentation_%s/Summary/segmentation'%(args.basecall_entry)].attrs['first_sample_template'])
             except:
                 start = 0
-            if reverse_sig and start>0:
+            if reverse_sig and args.rev_move and start>0:
                 signal = signal[:-start]
-            if args.rev_move:
+            if args.rev_move and reverse_sig:
                 pos = pos[::-1]
                 pos = pos[0] - pos 
             else:
                 signal = signal[start:]
+            if abs(len(signal)-len(pos)) > 100:
+                print("The signal length and position length is (%d), check if the stride is correct."%(abs(len(signal)-len(pos))))
             if abs(len(signal)-len(pos)) > min(len(signal),len(pos)):
                 print(fast5_f,read_id,len(pos),len(signal))
-                print("The signal length and position length is too different, check if the stride is correct.")
                 continue
-                
             if len(signal)>len(pos):
                 signal = signal[:len(pos)]
             else:

@@ -11,7 +11,7 @@ import torch.utils.data as data
 from torch.utils.data.dataloader import DataLoader
 from functools import partial
 from xron.xron_model import CRNN, CONFIG
-from xron.xron_input import Dataset, ToTensor, NumIndex, rna_filt, dna_filt
+from xron.xron_input import Dataset, ToTensor, NumIndex
 from xron.xron_train_base import Trainer, DeviceDataLoader, load_config
 
 class SupervisedTrainer(Trainer):
@@ -159,10 +159,11 @@ def main(args):
         config = config_old
     elif args.config:
         config = load_config(args.config)
-    if config.CTC['mode'] == 'rna':
-        chunks,reference,ref_len = rna_filt(chunks,reference,ref_len)
-    elif config.CTC['mode'] == 'dna':
-        chunks,reference,ref_len = dna_filt(chunks,reference,ref_len)
+    # if config.CTC['mode'] == 'rna':
+    #     chunks,reference,ref_len = rna_filt(chunks,reference,ref_len)
+    # elif config.CTC['mode'] == 'dna':
+    #     chunks,reference,ref_len = dna_filt(chunks,reference,ref_len)
+    ### This filter step is done before the data chunks are prepared.
     ref_len = ref_len.astype(np.int64)
     if reference[0].dtype.kind in ['U','S']:
         alphabet_dict = {x:i+1 for i,x in enumerate(TRAIN_CONFIG.CTC['alphabeta'])}
@@ -180,7 +181,14 @@ def main(args):
     net = CRNN(config)
     t = SupervisedTrainer(loader,net,config,eval_dataloader = loader_eval)
     if args.retrain:
+        print("Load previous trained model.")
         t.load(model_f)
+    elif args.embedding:
+        print("Import the embedding model from %s"%(args.embedding))
+        t.load(args.embedding)
+        for layer in t.net.embedding_layers:
+            for param in layer.parameters():
+                param.requires_grad = False
     lr = args.lr
     epoches = args.epoches
     optim = config.TRAIN['optimizer'](net.parameters(),lr = lr)
@@ -200,6 +208,8 @@ if __name__ == "__main__":
                         help="The .npy file contain the sequence.")
     parser.add_argument('--seq_len', required = True,
                         help="The .npy file contain the sueqnece length.")
+    parser.add_argument('--embedding', default = None,
+                        help="The folder contains the embedding model, if retrain is enable this will have no effect.")
     parser.add_argument('--device', default = 'cuda',
                         help="The device used for training, can be cpu or cuda.")
     parser.add_argument('--lr', default = 4e-3, type = float,
@@ -220,5 +230,8 @@ if __name__ == "__main__":
     parser.add_argument('--threads', type = int, default = None,
                         help = "Number of threads used by Pytorch")
     args = parser.parse_args(sys.argv[1:])
+    if args.retrain and args.embedding:
+        args.embedding = None
+        print("Embedding is being overrided by --load argument.")
     os.makedirs(args.model_folder,exist_ok=True)
     main(args)
