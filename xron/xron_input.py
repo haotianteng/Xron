@@ -54,7 +54,7 @@ class Dataset(data.Dataset):
         if seq_padding & (seq is not None):
             l_max = max(seq_len)
             seq = np.array([x+'$'*(l_max-len(x)) for x in seq])
-        self.chunks = chunks[:,None,:].astype(np.float32)
+        self.chunks = chunks
         if chunks_len is None:
             self.chunks_len = np.array([[chunks.shape[1]]]*chunks.shape[0],dtype = np.int64)
         else:
