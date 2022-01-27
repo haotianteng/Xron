@@ -148,9 +148,9 @@ def main(args):
                  "optimizer":optimizers[args.optimizer]}
     config = TRAIN_CONFIG()
     print("Read chunks and sequence.")
-    chunks = np.load(args.chunks)
-    reference = np.load(args.seq)
-    ref_len = np.load(args.seq_len)
+    chunks = np.load(args.chunks,mmap_mode= 'r')
+    reference = np.load(args.seq,mmap_mode= 'r')
+    ref_len = np.load(args.seq_len,mmap_mode= 'r')
     print("Construct and load the model.")
     model_f = args.model_folder
     if args.retrain:

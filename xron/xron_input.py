@@ -70,10 +70,10 @@ class Dataset(data.Dataset):
 
     def __getitem__(self, idx):
         if self.seq is None:
-            sample = {'signal': self.chunks[idx],
+            sample = {'signal': self.chunks[idx][None,:].astype(np.float32),
                       'signal_len': self.chunks_len[idx]}
         else:
-            sample = {'signal': self.chunks[idx], 
+            sample = {'signal': self.chunks[idx][None,:].astype(np.float32), 
                       'signal_len': self.chunks_len[idx],
                       'seq': self.seq[idx],
                       'seq_len': self.seq_len[idx]}
@@ -95,6 +95,7 @@ class NumIndex(object):
     def __init__(self,alphabet_dict:Dict):
         self.alphabet_dict = alphabet_dict
         self.alphabet_dict['$'] = 0 #Default padding character
+        self.alphabet_dict['N'] = 0 #Remove unknonw nucleotide
     def __call__(self,sample:Dict):
         seq = list(sample['seq'])
         seq = [self.alphabet_dict[x] for x in seq]

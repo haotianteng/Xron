@@ -18,8 +18,9 @@ from Bio.Seq import Seq
 from functools import partial
 alt_map = {'ins':'0','M':'A','U':'T'}
 complement = {'A': 'T', 'C': 'G', 'G': 'C', 'T': 'A'} 
-RNA_FILTER_CONFIG = {"min_rate":10,
-                     "min_seq_len":5,
+MIN_READ_SEQ_LEN = 100 #The filter of minimum sequence length.
+RNA_FILTER_CONFIG = {"min_rate":20,
+                     "min_seq_len":10,
                      "max_mono_prop":0.6}
 
 DNA_FILTER_CONFIG = {"min_rate":2,
@@ -54,10 +55,13 @@ def filt(filt_config,chunks,seq,seq_len):
     mask = np.logical_and(mask_min,mask_max)
     print("%.2f"%(100*sum(np.logical_not(mask_min))/chunks.shape[0]),"% chunks are filted out by minimum sequence length filter.")
     print("%.2f"%(100*sum(np.logical_not(mask_max))/chunks.shape[0]),"% chunks are filted out by maximum sequence length filter.")
-    ### FIlter out by monopolization
+    ### Filter out by monopolization
     mono_mask = [max(np.unique(list(x),return_counts = True)[1])/y<filt_config['max_mono_prop'] for x,y in zip(seq[mask],seq_len[mask])]
     print("%.2f"%(100*sum(np.logical_not(mono_mask))/sum(mask)),"% chunks are filted out by mono filter.")
-    return chunks[mask][mono_mask],seq[mask][mono_mask],seq_len[mask][mono_mask]
+    ### Filter by unrecognized nucleotide type
+    type_mask = [len(x.replace('A','').replace('G','').replace('C','').replace('T',''))==0 for x in seq[mask]]
+    print("%.2f"%(100*sum(np.logical_not(type_mask))/sum(mask)),"% chunks are filted out by nucleotide filter.")
+    return chunks[mask][mono_mask],seq[mask][mono_mask],seq_len[mask][mono_mask][type_mask]
     
 def rna_filt(chunks,seq,seq_len):
     return partial(filt,RNA_FILTER_CONFIG)(chunks,seq,seq_len)
@@ -81,7 +85,9 @@ def extract(args):
     meta_info,chunks,seqs,meds,mads,meths = [],[],[],[],[],[]
     if args.mode == "rna" or args.mode == "rna_meth":
         reverse_sig = True
-        
+    fail_read_count = {"No basecall":0,
+                       "Read too short":0,
+                       "Sequence length is inconsistent with signal length":0}
     for read_h,signal,fast5_f,read_id in tqdm(iterator):
         read_len = len(signal)
         signal,med,mad = norm_func(signal)
@@ -94,6 +100,10 @@ def extract(args):
                                    args.stride)
             except KeyError:
                 print("No basecall information was found in entry Basecall_1D_%s of read %s of %s, skip the read."%(args.basecall_entry,read_id,fast5_f))
+                fail_read_count["No basecall"]+=1
+                continue
+            if len(seq) < MIN_READ_SEQ_LEN:
+                fail_read_count["Read too short"]+=1
                 continue
             if seq.count('A')+seq.count('M') == 0:
                 meths.append(np.nan)
@@ -119,6 +129,7 @@ def extract(args):
                 print("The signal length and position length is (%d), check if the stride is correct."%(abs(len(signal)-len(pos))))
             if abs(len(signal)-len(pos)) > min(len(signal),len(pos)):
                 print(fast5_f,read_id,len(pos),len(signal))
+                fail_read_count["Sequence length is inconsistent with signal length"] +=1
                 continue
             if len(signal)>len(pos):
                 signal = signal[:len(pos)]
@@ -149,6 +160,8 @@ def extract(args):
         current_chunks[-1]= np.pad(last_chunk,(0,args.chunk_len-len(last_chunk)),'constant',constant_values = (0,0))
         chunks += current_chunks
         meta_info += [(fast5_f,read_id,str(args.chunk_len),str(args.stride))]*len(current_chunks)
+        for key,val in fail_read_count.items():
+            print(key,':',val)
         if args.max_n and (args.max_n > 0) and (len(chunks)>args.max_n):
             chunks = chunks[:args.max_n]
             seqs = seqs[:args.max_n]

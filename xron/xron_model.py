@@ -76,7 +76,8 @@ class DECODER_CONFIG(CONFIG):
 class MM_CONFIG(DECODER_CONFIG):
     PORE_MODEL = {"PORE_MODEL_F":PORE_MODEL_F,
                   "N_BASE": N_BASE, #for AGCT is 4, for AGCTM is 5
-                  "K" : 4,
+                  'K' : 3,
+                  "N_EMBD":None, #Number of embbding, if None then it's set to N_BASE**K+1
                   "EMBEDDING_SIZE":EMBEDDING_SIZE,
                   "LOAD": False} #If load the pretrain pore model.
     DECODER = {"X_UPSAMPLING":5, #The scale factor of upsampling.
@@ -466,6 +467,7 @@ class MM(nn.Module):
         self.config = config
         self.N_BASE = self.config.PORE_MODEL['N_BASE']
         self.K = self.config.PORE_MODEL['K']
+        self.n_embd = self.config.PORE_MODEL['n_embd']
         self.embedding_size = self.config.PORE_MODEL["EMBEDDING_SIZE"]
         if config.PORE_MODEL['LOAD']:
             self.pore_model = pd.read_csv(config.PORE_MODEL['PORE_MODEL_F'],
@@ -476,7 +478,8 @@ class MM(nn.Module):
                                                                 freeze = False,
                                                                 padding_idx=0)
         else:
-            n_embd = (self.N_BASE)**self.K+1
+            if not self.n_embd:
+                n_embd = (self.N_BASE)**self.K+1
             self.level_embedding = nn.Embedding(n_embd,self.embedding_size)
             self.level_embedding.weight.data.uniform_(-1./n_embd, 1./n_embd)
         self.upsampling = torch.nn.Upsample(scale_factor=config.DECODER['X_UPSAMPLING'],

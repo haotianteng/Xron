@@ -12,7 +12,8 @@ from itertools import chain
 from torchvision import transforms
 import torch.utils.data as data
 from torch.utils.data.dataloader import DataLoader
-from xron.xron_input import Dataset, ToTensor, NumIndex,rna_filt,dna_filt
+from xron.xron_input import Dataset, ToTensor, NumIndex
+from xron.utils.prepare_chunk import rna_filt,dna_filt
 from xron.xron_train_base import Trainer, DeviceDataLoader, load_config
 from xron.xron_model import REVCNN,DECODER_CONFIG,CRNN,CRITIC_CONFIG,CRITIC,MM_CONFIG,MM
 from xron.utils.vq import vq
