@@ -177,7 +177,7 @@ def main(args):
     config = TRAIN_CONFIG()
     config.PORE_MODEL["N_BASE"] = len(config.CTC["alphabeta"])
     print("Read chunks and sequence.")
-    chunks = np.load(args.chunks,allow_pickle = True)
+    chunks = np.load(args.chunks,allow_pickle = True,mmap_mode= 'r')
     reference = np.load(args.seq) if args.seq else None
     ref_len = np.load(args.seq_len) if args.seq_len else None
     print("Construct and load the model.")
@@ -197,6 +197,10 @@ def main(args):
     if args.retrain:
         config_old = load_config(os.path.join(model_f,"config.toml"))
         config_old.TRAIN = config.TRAIN #Overwrite training config.
+        config = config_old
+    if args.config:
+        config_old = load_config(args.config)
+        config_old.TRAIN = config.TRAIN
         config = config_old
     encoder = CRNN(config)
     decoder = REVCNN(config)
@@ -219,10 +223,8 @@ if __name__ == "__main__":
                         help = "The .npy file contain chunks.")
     parser.add_argument('-o', '--model_folder', required = True,
                         help = "The folder to save folder at.")
-    parser.add_argument('--seq', default = None,
-                        help="The .npy file contain the sequence.")
-    parser.add_argument('--seq_len', default = None,
-                        help="The .npy file contain the sueqnece length.")
+    parser.add_argument('--config', default = None,
+                        help = "The configure file used to train.")
     parser.add_argument('--device', default = 'cuda',
                         help="The device used for training, can be cpu or cuda.")
     parser.add_argument('--lr', default = 4e-3, type = float,
@@ -240,6 +242,8 @@ if __name__ == "__main__":
     parser.add_argument('--diffSig',action="store_true",dest = "diff",
                         help="If the input chunks are diffrential signal.")
     args = parser.parse_args(sys.argv[1:])
+    args.seq = None
+    args.seq_len = None
     if not os.path.isdir(args.model_folder):
         os.mkdir(args.model_folder)
     main(args)
