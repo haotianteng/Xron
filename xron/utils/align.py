@@ -167,7 +167,7 @@ class MetricAligner(mp.Aligner):
         """
         hits = self.align_seq(seq)
         if not hits:
-            return [],None,None
+            return [],None,None,None
         hit = hits[0]
         cigar = hit.cigar_str
         n_deletion = self._count_cigar(cigar,'D')
@@ -179,27 +179,33 @@ class MetricAligner(mp.Aligner):
         operation = re.findall(r'[A-Za-z]',cigar)
         curr = 0
         curr_query = 0
+        quality_score = np.zeros(len(ref_seq))
         for inc,op in zip(increment,operation):
             if op == "S":
                 curr_query += inc
             elif op == "M":
                 ref_idx[curr:curr+inc] = np.arange(curr_query,curr_query + inc)
+                quality_score[curr:curr+inc] = 1
                 curr += inc
                 curr_query += inc
             elif op == "I":
+                quality_score[curr]-= inc
                 curr_query += inc
             elif op == "D":
                 if inc <= 1:
                     ref_idx[curr:curr+inc] = curr_query
+                    quality_score[curr:curr+inc] = 0
                 else:
                     ref_idx[curr:curr+inc//2] = curr_query-1
                     ref_idx[curr+inc//2:curr+inc] = curr_query
+                    quality_score[curr:curr+inc] = 0
                 curr += inc
         if hit.strand == -1:
             ref_seq = reverse_complement(ref_seq)
             ref_idx = len(seq) - ref_idx
             ref_idx = ref_idx[::-1]
-        return hits,ref_seq,ref_idx
+            quality_score = quality_score[::-1]
+        return hits,ref_seq,ref_idx,quality_score
                 
 
     def _count_cigar(self,cigar_string,c = 'M'):
