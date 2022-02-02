@@ -6,15 +6,17 @@ Created on Thu Mar 11 16:07:12 2021
 import os
 import toml
 import torch
+import itertools
+import numpy as np
 from typing import Union,Dict
 from torch.utils.data.dataloader import DataLoader
-from xron.xron_model import CRNN, REVCNN, CONFIG,DECODER_CONFIG
+from xron.xron_model import CRNN, REVCNN, CONFIG,DECODER_CONFIG,MM
 
 
 class Trainer(object):
     def __init__(self,
                  train_dataloader:DataLoader,
-                 nets:Dict[str,Union[CRNN,REVCNN]],
+                 nets:Dict[str,Union[CRNN,REVCNN,MM]],
                  config:Union[CONFIG,DECODER_CONFIG],
                  device:str = None,
                  eval_dataloader:DataLoader = None):
@@ -48,6 +50,8 @@ class Trainer(object):
         else:
             self.eval_ds = eval_dataloader
         self.nets = nets
+        paras = [x.parameters() for x in self.nets.values()]
+        self.parameters = itertools.chain(*paras)
         for net in self.nets.values():
             net.to(self.device)
         self.global_step = 0
@@ -55,6 +59,8 @@ class Trainer(object):
         self.keep_record = config.TRAIN['keep_record']
         self.grad_norm = config.TRAIN['grad_norm']
         self.config = config
+        self.losses = []
+        self.errors = []
     
     def _get_device(self,device):
         if device is None:
@@ -64,7 +70,12 @@ class Trainer(object):
                 return torch.device('cpu')
         else:
             return torch.device(device)
-        
+
+    def _update_records(self):
+        record_file = os.path.join(self.save_folder,'records.toml')
+        with open(record_file,'w+') as f:
+            toml.dump(self.records,f)
+
     def save(self):
         ckpt_file = os.path.join(self.save_folder,'checkpoint')
         current_ckpt = 'ckpt-'+str(self.global_step)
@@ -75,12 +86,28 @@ class Trainer(object):
         if len(self.save_list) > self.keep_record:
             os.remove(os.path.join(self.save_folder,self.save_list[0]))
             self.save_list = self.save_list[1:]
+        if os.path.isfile(model_file):
+            os.remove(model_file)
         with open(ckpt_file,'w+') as f:
             f.write("latest checkpoint:" + current_ckpt + '\n')
             for path in self.save_list:
                 f.write("checkpoint file:" + path + '\n')
         net_dict = {key:net.state_dict() for key,net in self.nets.items()}
         torch.save(net_dict,model_file)
+    
+    def save_loss(self):
+        loss_file = os.path.join(self.save_folder,'losses.csv')
+        error_file = os.path.join(self.save_folder,'errors.csv')
+        if len(self.losses):
+            with open(loss_file,'a+') as f:
+                f.write('\n'.join([str(x) for x in self.losses]))
+                f.write('\n')
+        if len(self.errors):
+            with open(error_file,'a+') as f:
+                f.write('\n'.join([str(x) for x in self.errors]))
+                f.write('\n')
+        self.losses = []
+        self.errors = []
     
     def _save_config(self):
         config_file = os.path.join(self.save_folder,'config.toml')
@@ -89,17 +116,21 @@ class Trainer(object):
         with open(config_file,'w+') as f:
             toml.dump(config_dict,f)
     
-    def load(self,save_folder):
+    def load(self,save_folder,update_global_step = True):
         self.save_folder = save_folder
         ckpt_file = os.path.join(save_folder,'checkpoint')
         with open(ckpt_file,'r') as f:
             latest_ckpt = f.readline().strip().split(':')[1]
-            self.global_step = int(latest_ckpt.split('-')[1])
+            if update_global_step:
+                self.global_step = int(latest_ckpt.split('-')[1])
         ckpt = torch.load(os.path.join(save_folder,latest_ckpt),
                           map_location=self.device)
-        for key,net in self.nets.items():
-            net.load_state_dict(ckpt[key])
-            net.to(self.device)
+        for key,net in ckpt.items():
+            if key in self.nets.keys():
+                self.nets[key].load_state_dict(net)
+                self.nets[key].to(self.device)
+            else:
+                print("%s net is defined in the checkpoint but is not imported because it's not defined in the model."%(key))
 
 class DeviceDataLoader():
     """Wrap a dataloader to move data to a device"""
