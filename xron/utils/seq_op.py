@@ -59,7 +59,21 @@ def string2list(input_v, base_type):
         result.append(base_dict[item])
     return result
 
-
+def fast5_iter_old(fast5_dir,mode = 'r'):
+    for (dirpath, dirnames, filenames) in os.walk(fast5_dir+'/'):
+        for filename in filenames:
+            if not filename.endswith('fast5'):
+                continue
+            abs_path = os.path.join(dirpath,filename)
+            root = h5py.File(abs_path,mode = mode)
+            read_h = list(root['/Raw/Reads'].values())[0]
+            if 'Signal_Old' in read_h:
+                signal = np.asarray(read_h[('Signal_Old')],dtype = np.float32)
+            else:
+                signal = np.asarray(read_h[('Signal')],dtype = np.float32)
+            read_id = read_h.attrs['read_id']
+            yield read_h,signal,abs_path,read_id.decode("utf-8")
+            
 def fast5_iter(fast5_dir,mode = 'r'):
     for (dirpath, dirnames, filenames) in os.walk(fast5_dir+'/'):
         for filename in filenames:
