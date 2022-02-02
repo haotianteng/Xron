@@ -23,13 +23,13 @@ module_dict = {'Res1d':xron.nn.Res1d,
 # PORE_MODEL_F = "pore_models/5mer_level_table.model"
 PORE_MODEL_F = "pore_models/m6A_5mer_level.model"
 N_BASE = 5 #AGCTM
-EMBEDDING_SIZE = 128
+EMBEDDING_SIZE = 768
 CNN_KERNAL_COMP= 19
 CNN_STRIDE = 5
 class CNN_CONFIG(object):
     CNN = {'N_Layer':3,
-           'Layers': [{'layer_type':'Res1d','kernel_size':5,'stride':1,'out_channels':32},
-                      {'layer_type':'Res1d','kernel_size':5,'stride':1,'out_channels':64},
+           'Layers': [{'layer_type':'Res1d','kernel_size':5,'stride':1,'out_channels':4},
+                      {'layer_type':'Res1d','kernel_size':5,'stride':1,'out_channels':16},
                       {'layer_type':'Res1d','kernel_size':CNN_KERNAL_COMP,'stride':CNN_STRIDE,'out_channels':EMBEDDING_SIZE}]
         }
 class RNN_CONFIG(CNN_CONFIG):
@@ -77,7 +77,7 @@ class MM_CONFIG(DECODER_CONFIG):
     PORE_MODEL = {"PORE_MODEL_F":PORE_MODEL_F,
                   "N_BASE": N_BASE, #for AGCT is 4, for AGCTM is 5
                   'K' : 3,
-                  "N_EMBD":None, #Number of embbding, if None then it's set to N_BASE**K+1
+                  'N_EMBD':None, #Number of embbding, if None then it's set to N_BASE**K+1
                   "EMBEDDING_SIZE":EMBEDDING_SIZE,
                   "LOAD": False} #If load the pretrain pore model.
     DECODER = {"X_UPSAMPLING":5, #The scale factor of upsampling.
@@ -467,7 +467,7 @@ class MM(nn.Module):
         self.config = config
         self.N_BASE = self.config.PORE_MODEL['N_BASE']
         self.K = self.config.PORE_MODEL['K']
-        self.n_embd = self.config.PORE_MODEL['n_embd']
+        self.n_embd = self.config.PORE_MODEL['N_EMBD']
         self.embedding_size = self.config.PORE_MODEL["EMBEDDING_SIZE"]
         if config.PORE_MODEL['LOAD']:
             self.pore_model = pd.read_csv(config.PORE_MODEL['PORE_MODEL_F'],
