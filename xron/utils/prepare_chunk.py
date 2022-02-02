@@ -17,9 +17,15 @@ from xron.utils.seq_op import fast5_iter,norm_by_noisiest_section,diff_norm_by_n
 from xron.utils.align import MetricAligner
 from Bio.Seq import Seq
 from functools import partial
+from boostnano.boostnano_model import CSM
+from boostnano.boostnano_eval import evaluator
+import inspect
+import os
+from pathlib import Path
+
 alt_map = {'ins':'0','M':'A','U':'T'}
 complement = {'A': 'T', 'C': 'G', 'G': 'C', 'T': 'A'} 
-MIN_READ_SEQ_LEN = 100 #The filter of minimum sequence length.
+MIN_READ_SEQ_LEN = 400 #The filter of minimum sequence length.
 RNA_FILTER_CONFIG = {"min_rate":25,
                      "min_seq_len":15,
                      "max_gap_allow":400,
@@ -61,7 +67,11 @@ def filt(filt_config,chunks,seq,seq_len):
     qs_mask = np.asarray([x!='X' for x in seq]) # 'X' is the mark of low quality chunks.
     qs_penc = 100*sum(np.logical_not(qs_mask))/sum(mask_min)
     print("%.2f"%(qs_penc),"% chunks has been filtered out because of quality score.")
-    
+
+    ### Filter by boostnano
+    bn_mask = np.asarray([x!='Y' for x in seq]) # 'Y' means current chunks is from a polyA tail or adapter sequence.
+    bn_penc = 100*sum(np.logical_not(bn_mask))/sum(mask_min)
+    print("%.2f"%(bn_penc),"% chunks has been filtered out because they are polyA tail or adapter.")    
     
     ### Filter by gap
     gap_mask = np.asarray([x!='P' for x in seq]) # 'P' is the mark of chunks with large gap.
@@ -70,7 +80,7 @@ def filt(filt_config,chunks,seq,seq_len):
 
     print("%.2f"%(100*sum(np.logical_not(mask_min))/chunks.shape[0] - gap_perc - qs_penc),"% chunks are filted out by minimum sequence length filter.")
     print("%.2f"%(100*sum(np.logical_not(mask_max))/chunks.shape[0]),"% chunks are filted out by maximum sequence length filter.")
-    mask = (mask_min*mask_max*qs_mask*gap_mask).astype(bool)
+    mask = (mask_min*mask_max*qs_mask*gap_mask*bn_mask).astype(bool)
     
     
     ### Filter out by monopolization
@@ -108,6 +118,11 @@ def extract(args):
     if args.extract_seq:
         print("Read reference genome.")
         aligner = MetricAligner(args.reference,options = '-x ont2d')
+    print("Loading BoostNano model.")
+    project_f = os.path.dirname(os.path.dirname(inspect.getfile(CSM)))
+    model_f = os.path.join(project_f,'BoostNano','model')
+    net = CSM()
+    boostnano_evaluator = evaluator(net,model_f)
     print("Begin processing the reads.")
     meta_info,chunks,seqs,meds,mads,meths = [],[],[],[],[],[]
     if args.mode == "rna" or args.mode == "rna_meth":
@@ -123,6 +138,9 @@ def extract(args):
     
     for read_h,signal,fast5_f,read_id in tqdm(iterator):
         read_len = len(signal)
+        if args.mode == 'rna' or args.mode == 'rna-meth':
+            (decoded,path,locs) = boostnano_evaluator.eval_sig(signal.astype(np.float32),1000)
+            locs = read_len - locs
         signal,med,mad = norm_func(signal)
         signal = signal.astype(np.float16)
         if reverse_sig:
@@ -173,6 +191,10 @@ def extract(args):
                 continue
             read_len = len(pos)
             for x in np.arange(0,read_len,args.chunk_len):
+                if args.mode == "rna" or args.mode == "rna_meth":
+                    if x+args.chunk_len > locs[0]:
+                        seqs.append('Y')
+                        continue
                 s,e = pos[x:x+args.chunk_len][[0,-1]]
                 mask = (ref_idx>=s)&(ref_idx<=e)
                 qs_mask = qs[mask]
