@@ -11,6 +11,7 @@ import toml
 import numpy as np
 import argparse
 from matplotlib import pyplot as plt
+from itertools import compress
 import seaborn as sns
 from tqdm import tqdm
 from xron.utils.seq_op import fast5_iter,norm_by_noisiest_section,diff_norm_by_noisiest_section,diff_norm_fixing_deviation
@@ -25,11 +26,11 @@ from pathlib import Path
 
 alt_map = {'ins':'0','M':'A','U':'T'}
 complement = {'A': 'T', 'C': 'G', 'G': 'C', 'T': 'A'} 
-MIN_READ_SEQ_LEN = 400 #The filter of minimum sequence length.
+MIN_READ_SEQ_LEN = 100 #The filter of minimum sequence length.
 RNA_FILTER_CONFIG = {"min_rate":25,
-                     "min_seq_len":15,
-                     "max_gap_allow":400,
-                     "min_quality_score":0.8, #the minimum quality score for a chunk to be included into traning set.
+                     "min_seq_len":3,
+                     "max_gap_allow":800,
+                     "min_quality_score":0.85, #the minimum quality score for a chunk to be included into traning set.
                      "max_mono_prop":0.6}
 
 DNA_FILTER_CONFIG = {"min_rate":2,
@@ -54,7 +55,7 @@ def retrive_seq(seq_h,event_stride):
     pos = np.repeat(np.cumsum(moves)-1,repeats = event_stride).astype(np.int32)
     return seq,pos
     
-def filt(filt_config,chunks,seq,seq_len):
+def filt(filt_config,chunks,seq,seq_len,meta):
     n = chunks.shape[0]
     segment_len = chunks.shape[1]
     print("Origin %d chunks in total."%(chunks.shape[0]))
@@ -65,21 +66,21 @@ def filt(filt_config,chunks,seq,seq_len):
     mask_max = seq_len<max_seq_len
     ### Filter by quality score
     qs_mask = np.asarray([x!='X' for x in seq]) # 'X' is the mark of low quality chunks.
-    qs_penc = 100*sum(np.logical_not(qs_mask))/sum(mask_min)
+    qs_penc = 100*sum(np.logical_not(qs_mask))/n
     print("%.2f"%(qs_penc),"% chunks has been filtered out because of quality score.")
 
     ### Filter by boostnano
     bn_mask = np.asarray([x!='Y' for x in seq]) # 'Y' means current chunks is from a polyA tail or adapter sequence.
-    bn_penc = 100*sum(np.logical_not(bn_mask))/sum(mask_min)
+    bn_penc = 100*sum(np.logical_not(bn_mask))/n
     print("%.2f"%(bn_penc),"% chunks has been filtered out because they are polyA tail or adapter.")    
     
     ### Filter by gap
     gap_mask = np.asarray([x!='P' for x in seq]) # 'P' is the mark of chunks with large gap.
-    gap_perc = 100*sum(np.logical_not(gap_mask))/sum(mask_min)
+    gap_perc = 100*sum(np.logical_not(gap_mask))/n
     print("%.2f"%(gap_perc),"% chunks has been filtered out because of large gap.")
 
-    print("%.2f"%(100*sum(np.logical_not(mask_min))/chunks.shape[0] - gap_perc - qs_penc),"% chunks are filted out by minimum sequence length filter.")
-    print("%.2f"%(100*sum(np.logical_not(mask_max))/chunks.shape[0]),"% chunks are filted out by maximum sequence length filter.")
+    print("%.2f"%(100*sum(np.logical_not(mask_min))/n - gap_perc - qs_penc),"% chunks are filted out by minimum sequence length filter.")
+    print("%.2f"%(100*sum(np.logical_not(mask_max))/n),"% chunks are filted out by maximum sequence length filter.")
     mask = (mask_min*mask_max*qs_mask*gap_mask*bn_mask).astype(bool)
     
     
@@ -94,13 +95,13 @@ def filt(filt_config,chunks,seq,seq_len):
     
     pass_chunks = chunks[mask][mono_mask]
     print("In total %.2f"%(100*len(pass_chunks)/len(chunks)),"% of reads pass the filters.")
-    return pass_chunks,seq[mask][mono_mask],seq_len[mask][mono_mask]
+    return pass_chunks,seq[mask][mono_mask],seq_len[mask][mono_mask],list(compress(compress(meta,mask),mono_mask))
     
-def rna_filt(chunks,seq,seq_len):
-    return partial(filt,RNA_FILTER_CONFIG)(chunks,seq,seq_len)
+def rna_filt(chunks,seq,seq_len,meta):
+    return partial(filt,RNA_FILTER_CONFIG)(chunks,seq,seq_len,meta)
 
-def dna_filt(chunks,seq,seq_len):
-    return partial(filt,DNA_FILTER_CONFIG)(chunks,seq,seq_len)
+def dna_filt(chunks,seq,seq_len,meta):
+    return partial(filt,DNA_FILTER_CONFIG)(chunks,seq,seq_len,meta)
 
 def extract(args):
     if args.mode == 'dna':
@@ -124,7 +125,7 @@ def extract(args):
     net = CSM()
     boostnano_evaluator = evaluator(net,model_f)
     print("Begin processing the reads.")
-    meta_info,chunks,seqs,meds,mads,meths = [],[],[],[],[],[]
+    meta_info,chunks,seqs,meds,mads,meths,offsets,scales,read_ids = [],[],[],[],[],[],[],[],[]
     if args.mode == "rna" or args.mode == "rna_meth":
         reverse_sig = True
     fail_read_count = {"No basecall":0,
@@ -138,9 +139,7 @@ def extract(args):
     
     for read_h,signal,fast5_f,read_id in tqdm(iterator):
         read_len = len(signal)
-        if args.mode == 'rna' or args.mode == 'rna-meth':
-            (decoded,path,locs) = boostnano_evaluator.eval_sig(signal.astype(np.float32),1000)
-            locs = read_len - locs
+        original_signal = signal.astype(np.float32)
         signal,med,mad = norm_func(signal)
         signal = signal.astype(np.float16)
         if reverse_sig:
@@ -161,10 +160,13 @@ def extract(args):
             else:
                 meths.append(seq.count('M')/(seq.count('A')+seq.count('M')+1e-8))
             seq = clean_repr(seq) #M->A, U->T
-            hits,ref_seq,ref_idx,qs = aligner.ref_seq(seq)
+            hits,ref_seq,ref_idx,qs = aligner.ref_seq(seq,exclude_negative=True)
             if not hits:
                 fail_read_count['Alignment failed'] += 1
                 continue
+            if args.mode == 'rna' or args.mode == 'rna-meth':
+                (decoded,path,locs) = boostnano_evaluator.eval_sig(original_signal,1000)
+                locs = read_len - locs
             assert np.all(np.diff(ref_idx)>=0)
             try:
                 start = int(read_h['Analyses/Segmentation_%s/Summary/segmentation'%(args.basecall_entry)].attrs['first_sample_template'])
@@ -219,6 +221,9 @@ def extract(args):
                     seqs.append('')
         meds.append(med)
         mads.append(mad)
+        offsets.append(read_h['channel_id'].attrs['offset'])
+        scales.append(read_h['channel_id'].attrs['range'])
+        read_ids.append(read_id)
         current_chunks = np.split(signal,np.arange(0,read_len,args.chunk_len))[1:]
         last_chunk = current_chunks[-1]
         current_chunks[-1]= np.pad(last_chunk,(0,args.chunk_len-len(last_chunk)),'constant',constant_values = (0,0))
@@ -232,23 +237,25 @@ def extract(args):
     for key,val in fail_read_count.items():
         print(key,':',val)
     chunks = np.stack(chunks,axis = 0)
-    np.savetxt(os.path.join(args.output,'meta.csv'),meta_info,fmt="%s")
     print("Average median value %f"%(np.mean(meds)))
     print("Average median absolute deviation %f"%(np.mean(mads)))
     print("Average methylation proportion %f"%(np.nanmean(meths)))
-    np.save(os.path.join(args.output,'mm.npy'),(mads,meds,meths))
     if args.extract_seq:
         seq_lens = [len(i) for i in seqs]
         seqs = np.array(seqs)
         seq_lens = np.array(seq_lens)
         filt_func = dna_filt if args.mode == "dna" else rna_filt
-        chunks,seqs,seq_lens = filt_func(chunks,seqs,seq_lens)
+        chunks,seqs,seq_lens,meta_info = filt_func(chunks,seqs,seq_lens,meta_info)
         np.save(os.path.join(args.output,'seqs.npy'),seqs)
         np.save(os.path.join(args.output,'seq_lens.npy'),seq_lens)
+    np.save(os.path.join(args.output,'mm.npy'),(mads,meds,meths,offsets,scales,read_ids))
+    np.savetxt(os.path.join(args.output,'meta.csv'),meta_info,fmt="%s")
     np.save(os.path.join(args.output,'chunks.npy'),chunks)
     config_file = os.path.join(args.output,'config.toml')
     config_modules = [x for x in args.__dir__() if not x .startswith('_')][::-1]
     config_dict = {x:getattr(args,x) for x in config_modules}
+    config_dict['FILTER_CONFIG'] = FILTER_CONFIG
+    config_dict['minimum_sequence_length']:MIN_READ_SEQ_LEN
     plt.figure()
     sns.distplot(qss)
     plt.xlabel("Quality score")
