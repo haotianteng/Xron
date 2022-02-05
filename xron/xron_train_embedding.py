@@ -178,19 +178,9 @@ def main(args):
     config.PORE_MODEL["N_BASE"] = len(config.CTC["alphabeta"])
     print("Read chunks and sequence.")
     chunks = np.load(args.chunks,allow_pickle = True,mmap_mode= 'r')
-    reference = np.load(args.seq) if args.seq else None
-    ref_len = np.load(args.seq_len) if args.seq_len else None
     print("Construct and load the model.")
     model_f = args.model_folder
-    if reference is not None and (reference[0].dtype.kind in ['U','S']):
-        if config.CTC['mode'] == 'rna':
-            chunks,reference,ref_len = rna_filt(chunks,reference,ref_len)
-        elif config.CTC['mode'] == 'dna':
-            chunks,reference,ref_len = dna_filt(chunks,reference,ref_len)
-        alphabet_dict = {x:i+1 for i,x in enumerate(TRAIN_CONFIG.CTC['alphabeta'])}
-        dataset = Dataset(chunks,seq = reference,seq_len = ref_len,transform = transforms.Compose([NumIndex(alphabet_dict),ToTensor()]))
-    else:
-        dataset = Dataset(chunks,seq = reference,seq_len = ref_len,transform = transforms.Compose([ToTensor()]))
+    dataset = Dataset(chunks,seq = None,seq_len = None,transform = transforms.Compose([ToTensor()]))
     loader = data.DataLoader(dataset,batch_size = args.batch_size,shuffle = True, num_workers = 4)
     DEVICE = args.device
     loader = DeviceDataLoader(loader,device = DEVICE)
