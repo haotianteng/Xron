@@ -36,12 +36,17 @@ class Res1d(nn.Module):
         
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x0 = self.self_map(x)
-        
         out = self.conv1(x)
-        out = self.bn1(out)
+        if isinstance(self.bn1,nn.LayerNorm):
+            out = self.bn1(out.permute(0,2,1)).permute(0,2,1)
+        else:
+            out = self.bn1(out)
         out = self.activation(out)
         out = self.conv2(out)
-        out = self.bn2(out)
+        if isinstance(self.bn2,nn.LayerNorm):
+            out = self.bn2(out.permute(0,2,1)).permute(0,2,1)
+        else:
+            out = self.bn2(out)
         out = self.activation(out)
         out += x0
         return out

@@ -15,21 +15,22 @@ import editdistance
 from typing import List,Dict
 
 ### Encoder Configuration
-module_dict = {'Res1d':xron.nn.Res1d,
+module_dict = {'Res1d':partial(xron.nn.Res1d,batch_norm = nn.LayerNorm),
                'BidirectionalRNN':xron.nn.BidirectionalRNN,
                'LSTM':nn.LSTM,
                'ReLU':nn.ReLU,
+               'GRU':nn.GRU,
                'Sigmoid':nn.Sigmoid}
 # PORE_MODEL_F = "pore_models/5mer_level_table.model"
 PORE_MODEL_F = "pore_models/m6A_5mer_level.model"
 N_BASE = 5 #AGCTM
 EMBEDDING_SIZE = 768
-CNN_KERNAL_COMP= 19
-CNN_STRIDE = 5
+CNN_KERNAL_COMP= 25
+CNN_STRIDE = 11
 class CNN_CONFIG(object):
     CNN = {'N_Layer':3,
-           'Layers': [{'layer_type':'Res1d','kernel_size':5,'stride':1,'out_channels':4},
-                      {'layer_type':'Res1d','kernel_size':5,'stride':1,'out_channels':16},
+           'Layers': [{'layer_type':'Res1d','kernel_size':5,'stride':1,'out_channels':16},
+                      {'layer_type':'Res1d','kernel_size':5,'stride':1,'out_channels':32},
                       {'layer_type':'Res1d','kernel_size':CNN_KERNAL_COMP,'stride':CNN_STRIDE,'out_channels':EMBEDDING_SIZE}]
         }
 class RNN_CONFIG(CNN_CONFIG):
