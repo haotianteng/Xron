@@ -29,7 +29,7 @@ complement = {'A': 'T', 'C': 'G', 'G': 'C', 'T': 'A'}
 MIN_READ_SEQ_LEN = 100 #The filter of minimum sequence length.
 RNA_FILTER_CONFIG = {"min_rate":25,
                      "min_seq_len":3,
-                     "max_gap_allow":800,
+                     "max_gap_allow":2000,
                      "min_quality_score":0.85, #the minimum quality score for a chunk to be included into traning set.
                      "max_mono_prop":0.6}
 
@@ -79,7 +79,7 @@ def filt(filt_config,chunks,seq,seq_len,meta):
     gap_perc = 100*sum(np.logical_not(gap_mask))/n
     print("%.2f"%(gap_perc),"% chunks has been filtered out because of large gap.")
 
-    print("%.2f"%(100*sum(np.logical_not(mask_min))/n - gap_perc - qs_penc),"% chunks are filted out by minimum sequence length filter.")
+    print("%.2f"%(100*sum(np.logical_not(mask_min))/n - gap_perc - qs_penc - bn_penc),"% chunks are filted out by minimum sequence length filter.")
     print("%.2f"%(100*sum(np.logical_not(mask_max))/n),"% chunks are filted out by maximum sequence length filter.")
     mask = (mask_min*mask_max*qs_mask*gap_mask*bn_mask).astype(bool)
     
@@ -108,7 +108,11 @@ def extract(args):
         FILTER_CONFIG = DNA_FILTER_CONFIG
     else:
         FILTER_CONFIG = RNA_FILTER_CONFIG
-    iterator = fast5_iter(args.input_fast5,mode = 'r')
+    if args.write_correction:
+        m = 'r+'
+    else:
+        m = 'r'
+    iterator = fast5_iter(args.input_fast5,mode = m)
     if args.diff_sig:
         if args.config['fixed_deviation']:
             norm_func = diff_norm_fixing_deviation
@@ -131,13 +135,19 @@ def extract(args):
     fail_read_count = {"No basecall":0,
                        "Alignment failed":0,
                        "Read too short":0,
-                       "Sequence length is inconsistent with signal length":0}
+                       "Sequence length is inconsistent with signal length":0,
+                       "Processed":0}
     
     ### Debug code
     qss = []
     ###
-    
-    for read_h,signal,fast5_f,read_id in tqdm(iterator):
+    loop_obj = tqdm(iterator)
+    for read_h,signal,fast5_f,read_id in loop_obj:
+        loop_obj.set_postfix_str("no entry: %d, alignment failed: %d, read too short: %d, inconsistent length: %d, processed:%d"%(fail_read_count['No basecall'],
+                                                                                                                                  fail_read_count['Alignment failed'],
+                                                                                                                                  fail_read_count['Read too short'],
+                                                                                                                                  fail_read_count['Sequence length is inconsistent with signal length'],
+                                                                                                                                  fail_read_count['Processed']))
         read_len = len(signal)
         original_signal = signal.astype(np.float32)
         signal,med,mad = norm_func(signal)
@@ -148,10 +158,28 @@ def extract(args):
             try:
                 seq, pos = retrive_seq(read_h['Analyses/Basecall_1D_%s'%(args.basecall_entry)],
                                    args.stride)
+                basecall_entry = args.basecall_entry
             except KeyError:
-                print("No basecall information was found in entry Basecall_1D_%s of read %s of %s, skip the read."%(args.basecall_entry,read_id,fast5_f))
-                fail_read_count["No basecall"]+=1
-                continue
+                if args.alternative_entry:
+                    try:
+                        seq, pos = retrive_seq(read_h['Analyses/Basecall_1D_%s'%(args.alternative_entry)],
+                                           args.stride)
+                        basecall_entry = args.alternative_entry
+                    except KeyError:
+                        print("No basecall information was found in entry Basecall_1D_%s of read %s of %s, skip the read."%(args.basecall_entry,read_id,fast5_f))
+                        fail_read_count["No basecall"]+=1
+                        continue
+                else:
+                    print("No basecall information was found in entry Basecall_1D_%s of read %s of %s and no alternative entry is set, skip the read."%(args.basecall_entry,read_id,fast5_f))
+                    fail_read_count["No basecall"]+=1
+                    continue
+            assert read_h['Analyses/Basecall_1D_%s/Summary/basecall_1d_template'%(basecall_entry)].attrs['block_stride'] == args.stride
+            if args.write_correction:
+                if not "Segmentation_%s"%(basecall_entry) in read_h['Analyses']:
+                    read_h['Analyses/'].create_group("Segmentation_%s"%(basecall_entry))
+                if "Reference_corrected" in read_h['Analyses/Segmentation_%s/'%(basecall_entry)]:
+                    del read_h['Analyses/Segmentation_%s/Reference_corrected'%(basecall_entry)]
+                read_h['Analyses/Segmentation_%s/'%(basecall_entry)].create_group("Reference_corrected")
             if len(seq) < MIN_READ_SEQ_LEN:
                 fail_read_count["Read too short"]+=1
                 continue
@@ -160,7 +188,7 @@ def extract(args):
             else:
                 meths.append(seq.count('M')/(seq.count('A')+seq.count('M')+1e-8))
             seq = clean_repr(seq) #M->A, U->T
-            hits,ref_seq,ref_idx,qs = aligner.ref_seq(seq,exclude_negative=True)
+            hits,ref_seq,ref_idx,qs = aligner.ref_seq(seq,exclude_negative=True) #ref_idx: the ith ref_idx R_i means the ith base in reference sequence is the R_i base in basecalled sequence
             if not hits:
                 fail_read_count['Alignment failed'] += 1
                 continue
@@ -169,7 +197,7 @@ def extract(args):
                 locs = read_len - locs
             assert np.all(np.diff(ref_idx)>=0)
             try:
-                start = int(read_h['Analyses/Segmentation_%s/Summary/segmentation'%(args.basecall_entry)].attrs['first_sample_template'])
+                start = int(read_h['Analyses/Segmentation_%s/Summary/segmentation'%(basecall_entry)].attrs['first_sample_template'])
             except:
                 start = 0
             if reverse_sig and args.rev_move and start>0:
@@ -179,19 +207,30 @@ def extract(args):
                 pos = pos[0] - pos 
             else:
                 signal = signal[start:]
-            if abs(len(signal)-len(pos)) > 100:
-                print("The signal length and position length is (%d), check if the stride is correct."%(abs(len(signal)-len(pos))))
-            if abs(len(signal)-len(pos)) > min(len(signal),len(pos)):
+            if abs(len(signal)-len(pos)) > (min(len(signal),len(pos))/args.stride):
                 print(fast5_f,read_id,len(pos),len(signal))
+                print("The signal length is %d and position length is (%d) for read %s of %s, check if the stride is correct."%(len(signal),len(pos),read_id,fast5_f))
                 fail_read_count["Sequence length is inconsistent with signal length"] +=1
                 continue
-            if len(signal)>len(pos):
-                signal = signal[:len(pos)]
+            if len(signal)>len(pos) and args.padding:
+                #Insert values on random selected indexs.
+                padding = len(signal) - len(pos)
+                idxs = np.random.choice(len(pos),padding,replace = False)
+                pos = np.insert(pos,idxs,pos[idxs])
             else:
                 pos = pos[:len(signal)]
             if len(signal) == 0:
                 continue
             read_len = len(pos)
+            if args.write_correction:
+                ref_idx_aligned = ref_idx[ref_idx<=pos[-1]]
+                ref_seq_aligned = ref_seq[:len(ref_idx_aligned)]
+                qs_aligned = qs[:len(ref_idx_aligned)]
+                ref_sig_idx = [np.where(pos == x)[0][0] for x in ref_idx_aligned] #The ith ref_sig_idx REF_i means the ith base in reference sequence is the REF_i signal point at the reversed signal.
+                read_h['Analyses/Segmentation_%s/Reference_corrected'%(basecall_entry)].create_dataset("ref_sig_idx",data = ref_sig_idx)
+                read_h['Analyses/Segmentation_%s/Reference_corrected'%(basecall_entry)].create_dataset("ref_seq",data = ref_seq_aligned)
+                read_h['Analyses/Segmentation_%s/Reference_corrected'%(basecall_entry)].create_dataset("map_score",data = qs_aligned)
+            fail_read_count["Succeed"] += 1
             for x in np.arange(0,read_len,args.chunk_len):
                 if args.mode == "rna" or args.mode == "rna_meth":
                     if x+args.chunk_len > locs[0]:
@@ -287,17 +326,35 @@ if __name__ == "__main__":
                         action = "store_true",  
                         help = "If the sequence information is going to be\
                             extracted.")
+    parser.add_argument("--write_correction",
+                        action = "store_true",
+                        dest = "write_correction",
+                        help = "If write correcting alignment to the original fast5 file.")
     parser.add_argument('--basecall_entry',
                         default = "000",
                         help="The entry number in /Analysis/ to look into, for\
                             example 000 means looking for Basecall_1D_000.")
-    parser.add_argument('--basecaller',
-                        default = "xron",
+    parser.add_argument('--alternative_entry',
+                        default = None,
+                        help="If basecall information is not found in the basecall entry, look into this alternative entry.")
+    parser.add_argument('--stride',
+                        default = 10,
+                        type = int,
                         help = "The length of stride used in basecall model,\
                         for guppy RNA fast, this number is 12, for guppy RNA\
                         hac model, this number is 10, for xron this number is\
-                        5."
+                        5 or 11."
                         )
+    parser.add_argument('--padding',
+                        type = bool,
+                        default = False,
+                        help = "Padding the position to make the position has same length.")
+    parser.add_argument('--move_direction',
+                        default = 'forward',
+                        help = "The direction of the output Move matrix, for Guppy, it's forward, for Xron it's backward.")
+    parser.add_argument('--basecaller',
+                        default = None,
+                        help = "The basecaller setting, default is None, can be xron, guppy and guppy_fast, set this argument will override args.stride and args.move_direction.")
     parser.add_argument('--reference',
                         default = None,
                         help = "The reference genome, it's required when\
@@ -308,33 +365,40 @@ if __name__ == "__main__":
     parser.add_argument('--fix_d',action="store_true",
                         dest = "fix_d",
                         help = "Use a fix deviation to normalize the signal.")
-    parser.add_argument('--diff_sig',action = "store_true",
-                        dest = "chiron_diff_sig",
-                        help = "If we extract the differential signal for chiron.")
     FLAGS = parser.parse_args(sys.argv[1:])
-    XRON_CONFIG = {"stride":5,
-                   "differential_signal":FLAGS.chiron_diff_sig,
-                   "forward_move_matrix":False,#If the move matrix is count on reverse signal or forward signal.
+    XRON_CONFIG = {"stride":11,
+                   "padding":True, #If we padding the position to the same length as signal.
+                   "differential_signal":False,
+                   "forward_move_matrix":False,#If the move matrix is count on backward signal or forward signal, True means the move matrix is along the forward signal, so the move matrix should be reveresed first as the signal is reveresed before processing.
                    "fixed_deviation":FLAGS.fix_d} 
     GUPPY_CONFIG = {"stride":10,
+                    "chunk_len":2000, #The length of the chunk when basecall.
+                    "padding":False,
                     "forward_move_matrix":True,
                     "differential_signal":False}
     GUPPY_FAST_CONFIG = {"stride":12,
+                         "padding":False,
+                         "chunk_len":2000, #The length of the chunk when basecall.
                          "forward_move_matrix":True,
                          "differential_signal":False}
     config_dict = {"xron":XRON_CONFIG,
                    "guppy":GUPPY_CONFIG,
                    "guppy_fast":GUPPY_FAST_CONFIG}
-    config = config_dict[FLAGS.basecaller]
-    FLAGS.stride = config["stride"]
-    FLAGS.rev_move = config["forward_move_matrix"]
-    FLAGS.diff_sig = config["differential_signal"]
+    if FLAGS.basecaller:
+        config = config_dict[FLAGS.basecaller]
+        FLAGS.stride = config["stride"]
+        FLAGS.rev_move = config["forward_move_matrix"]
+        FLAGS.diff_sig = config["differential_signal"]
+        FLAGS.padding = config['padding']
+    else:
+        FLAGS.rev_move = FLAGS.move_direction
     FLAGS.config = config
     if FLAGS.extract_seq:
         if not FLAGS.reference:
             raise ValueError("Reference genome is required when extract the \
                              sequence.")
     os.makedirs(FLAGS.output,exist_ok = True)
+    print(FLAGS.write_correction)
     extract(FLAGS)
 
 

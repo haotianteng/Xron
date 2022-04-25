@@ -16,7 +16,6 @@ from xron.xron_input import Dataset, ToTensor, NumIndex
 from xron.utils.prepare_chunk import rna_filt,dna_filt
 from xron.xron_train_base import Trainer, DeviceDataLoader, load_config
 from xron.xron_model import REVCNN,DECODER_CONFIG,CRNN,CRITIC_CONFIG,CRITIC,MM_CONFIG,MM
-from xron.utils.vq import vq
 from xron.xron_label import MetricAligner
 from torch.distributions.one_hot_categorical import OneHotCategorical as OHC
 
@@ -63,7 +62,6 @@ class VQVAETrainer(Trainer):
         self.train_config = config.TRAIN
         self.global_step = 0
         self.score_average = 0
-        self.nn_embd = vq
         self.mse_loss = torch.nn.MSELoss(reduction = "mean")
         self.records = {'rc_losses':[],
                         'rc_valid':[],
@@ -140,13 +138,7 @@ class VQVAETrainer(Trainer):
         decoder = self.decoder
         embedding = self.mm.level_embedding
         signal = batch['signal']
-        q = encoder.forward_wo_fnn(signal) #[N,C,L]
-        e,e_shadow = self.nn_embd(q.permute([0,2,1]),embedding.weight) #[N,L,C] -> [N,C,L]
-        e = e.permute([0,2,1])
-        e_shadow = e_shadow.permute([0,2,1])
-        sg_q = q.detach()
-        sg_e = e.detach()
-        # q = q + torch.normal(torch.zeros(q.shape),std = self.train_config['sigma'])
+        e,q,e_shadow,sg_q,sg_e = encoder.forward_embedding(signal,embedding = embedding) 
         rc_signal = decoder.forward(e).permute([0,2,1]) #[N,L,C] -> [N,C,L]
         rc_loss = self.mse_loss(rc_signal,signal)
         embedding_loss = self.mse_loss(sg_q,e_shadow)

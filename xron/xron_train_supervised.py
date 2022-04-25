@@ -3,6 +3,7 @@
 """
 import os 
 import sys
+import math
 import torch
 import argparse
 import numpy as np
@@ -67,8 +68,8 @@ class SupervisedTrainer(Trainer):
                     continue
                 optimizer.zero_grad()
                 loss.backward()
-                torch.nn.utils.clip_grad_norm_(self.net.parameters(), 
-                                               max_norm=self.grad_norm)
+                # torch.nn.utils.clip_grad_norm_(self.net.parameters(), 
+                #                                max_norm=self.grad_norm)
                 optimizer.step()
                 self.losses.append(loss.item())
                 self.global_step +=1
@@ -144,8 +145,9 @@ def main(args):
                  "batch_size":args.batch_size,
                  "grad_norm":2,
                  "keep_record":5,
-                 "eval_size":10000,
-                 "optimizer":optimizers[args.optimizer]}
+                 "eval_size":100,
+                 "optimizer":optimizers[args.optimizer],
+                 "embedding_pretrain_model":args.embedding}
     config = TRAIN_CONFIG()
     print("Read chunks and sequence.")
     chunks = np.load(args.chunks,mmap_mode= 'r')
@@ -183,6 +185,20 @@ def main(args):
     if args.retrain:
         print("Load previous trained model.")
         t.load(model_f)
+        if args.retrain_on_last:
+            print("Freeze all layers except last %d fully-connected layers"%(args.retrain_on_last))
+            assert args.retrain_on_last <= config.FNN['N_Layer'], "Argument retrain_on_last %d is larger than the number of FNN layers %d."%(args.retrain_on_last,config.FNN['N_Layer'])
+            for layer in t.net.net[:-args.retrain_on_last*2]:
+                for param in layer.parameters():
+                    param.requires_grad = False
+        if args.reinitialize_methylation:
+            print("Reinitialize the methyaltion projection weight.")
+            projection = t.net.net[-2]
+            stdv = 1./math.sqrt(projection.weight.size(1))
+            with torch.no_grad():
+                projection.weight[-1] = (torch.rand(projection.weight[-1].shape)-0.5)*stdv
+                if projection.bias is not None:
+                    projection.bias[-1] = (torch.rand(1)-0.5)*stdv
     elif args.embedding:
         print("Import the embedding model from %s"%(args.embedding))
         t.load(args.embedding)
@@ -229,6 +245,10 @@ if __name__ == "__main__":
                             default is RMSprop")
     parser.add_argument('--threads', type = int, default = None,
                         help = "Number of threads used by Pytorch")
+    parser.add_argument('--retrain_on_last',type = int, default = None,
+                        help = "Number of FNN layers to retrain on, the rest of the layers will be freezed.")
+    parser.add_argument('--reinitialize_methylation', dest = "reinitialize_methylation", action = "store_true",
+                        help = "Reinitialize the methylation base projection in last FNN layer.")
     args = parser.parse_args(sys.argv[1:])
     if args.retrain and args.embedding:
         args.embedding = None

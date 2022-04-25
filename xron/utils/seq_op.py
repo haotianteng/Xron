@@ -31,11 +31,9 @@ def raw2seq(raw:ndarray, blank_symbol:int = 0)->List[ndarray]:
     mask = np.diff(raw).astype(bool)
     mask = np.insert(mask,0,True,axis = 1)
     moves = np.logical_and(raw!=blank_symbol,mask)
-    np.ma.array(raw,mask = mask).tolist()
     seqs = np.ma.array(raw,mask = np.logical_not(mask)).tolist(None)
     out_seqs = [[x-1 for x in seq if x is not None and x!=blank_symbol] for seq in seqs]
     return out_seqs,moves
-
 
 def list2string(input_v, base_type):
     if base_type == 0:
@@ -58,6 +56,24 @@ def string2list(input_v, base_type):
     for item in input_v:
         result.append(base_dict[item])
     return result
+
+def findall(string,char):
+    return [idx for idx,c in enumerate(string) if c==char]
+        
+def seq2kmers(seq:str,k:int = 3):
+    return [seq[x:x+k] for x in np.arange(len(seq) - k + 1)]
+
+def kmer2int(kmer,base_order = ['A','C','G','T','M']):
+    base = len(base_order)
+    s = 0
+    place = 0
+    for b in kmer[::-1]:
+        s += base_order.index(b)*base**place
+        place += 1
+    return s
+
+def kmers2array(kmers,base_order = ['A','C','G','T','M']):
+    return [kmer2int(x) for x in kmers]
 
 def fast5_iter_old(fast5_dir,mode = 'r'):
     for (dirpath, dirnames, filenames) in os.walk(fast5_dir+'/'):

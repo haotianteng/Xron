@@ -89,7 +89,26 @@ class NearstEmbeddingIndex(torch.autograd.Function):
 def vq_idx(x,embd_weight):    
     return NearstEmbeddingIndex().apply(x,embd_weight)
 
-def vq(x, embd_weight):
+def vq(x:torch.Tensor, embd_weight:torch.Tensor):
+    """
+    Apply vector quantised to the given input x and a coding book embed_weight
+
+    Parameters
+    ----------
+    x : torch.Tensor
+        The input tensor with shape [*,C], where C is the size of embedding.
+    embd_weight : torch.Tensor
+        The coding book of the embedding with shape [N,C] where N is the number
+        of embeddings and C is the size of embedding.
+
+    Returns
+    -------
+    e : torch.Tensor
+        The quantised embedding with same shape as input x.
+    e_shadow : torch.Tensor
+        The shadow tensor of e with same shape as input x.
+
+    """
     idx = NearstEmbeddingIndex().apply(x,embd_weight.detach())
     e_shadow = torch.index_select(embd_weight,dim = 0,index = idx).view_as(x)
     e = NearstEmbedding().apply(x, embd_weight.detach())
@@ -108,6 +127,9 @@ def loss(x,embd_weight):
 
 if __name__ == "__main__":
     import torchviz
+    from matplotlib import pyplot as plt
+    from matplotlib import image
+    print("Run testing code for Vector-quantization.")
     N_EMBD = 10
     EMBD_DIM = 3
     torch.manual_seed(1992)
@@ -131,3 +153,5 @@ if __name__ == "__main__":
     e = NearstEmbedding().apply(x,embd_weight)
     nn_grad ,_ = torch.autograd.grad((e.sum()), (x,embd_weight), create_graph=True,allow_unused=True )
     torchviz.make_dot((nn_grad, x, embd_weight,e), params={"grad_x": nn_grad, "x": x, "embedding_weight":embd_weight,"e":e}).render("./nearestembd", format="png")
+    img = image.imread("./nearestembd.png")
+    imgplot = plt.imshow(img)

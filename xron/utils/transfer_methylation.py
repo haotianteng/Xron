@@ -41,17 +41,20 @@ def load_data(prefix:str)->Tuple[np.array,Iterable,np.array,np.array,np.array]:
     chunk = np.load(chunk_f)
     seq = np.load(seq_f)
     seq_lens = np.load(seq_lens_f)
-    mad,med,meth = np.load(mm_f,allow_pickle=True)
-    mms = np.asarray([mad,med])
+    mm = np.load(mm_f,allow_pickle=True)
+    read_ids = mm[-1]
     metas = pd.read_csv(meta_f,delimiter = " ",header = None)
     metas = metas.dropna(how = 'all')
     ids = list(metas[1])
+    mask = [True if id in ids else False for id in read_ids]
+    mad,med,meth,offsets,scales,read_ids = [list(itertools.compress(x,mask)) for x in mm]
+    mms = np.asarray([mad,med])
     chunk_count = [len(list(j)) for i,j in itertools.groupby(ids)]
     mms_full = np.repeat(mms,chunk_count,axis = 1)
     return chunk,seq,seq_lens,mms,mms_full
 
 def main(args):
-    chunk_m,seq_m,seq_len_m= [],[],[]
+    chunk_m,seq_m,seq_lens_m= [],[],[]
     print("Read control dataset.")
     if args.control:
         chunk_c,seq_c,seq_lens_c,mms_c,mms_full_c= load_data(args.control)
@@ -70,29 +73,41 @@ def main(args):
                 chunk += offset[:,None]
             chunk_m.append(chunk)
             seq_m.append(seq)
-            seq_len_m.append(seq_lens)
+            seq_lens_m.append(seq_lens)
             m_size += chunk.shape[0]
             print(" Methylation %d dataset shape:%d"%(i+1,chunk.shape[0]))
         print("Control dataset size:%d"%(chunk_c.shape[0]))
         print("Methylation datasets total size:%d"%(m_size))
         chunk_m = np.concatenate(chunk_m,axis = 0)
         seq_m = np.concatenate(seq_m,axis = 0)
-        seq_len_m = np.concatenate(seq_len_m,axis = 0)
+        seq_lens_m = np.concatenate(seq_lens_m,axis = 0)
     else:
-        chunk_m,seq_m,seq_len_m = [],[],[]
-    min_n = min(len(chunk_c),len(chunk_m))
-    if args.equal_size:
-        chunk_c,seq_c,seq_lens_c,chunk_m,seq_m,seq_len_m = chunk_c[:min_n],seq_c[:min_n],seq_lens_c[:min_n],chunk_m[:min_n],seq_m[:min_n],seq_len_m[:min_n]
+        chunk_m,seq_m,seq_lens_m = [],[],[]
+    if args.cm_ratio:
+        size_c = len(chunk_c)
+        size_m = len(chunk_m)
+        curr_ratio = size_c/float(size_m)
+        if curr_ratio > args.cm_ratio:
+            shrink_size = int(size_m*args.cm_ratio)
+            chunk_c,seq_c,seq_lens_c = chunk_c[:shrink_size],seq_c[:shrink_size],seq_lens_c[:shrink_size]
+        elif curr_ratio < args.cm_ratio:
+            shrunk_size = int(size_c/args.cm_ratio)
+            chunk_m,seq_m,seq_lens_m = chunk_m[:shrink_size],seq_m[:shrink_size],seq_lens_m[:shrink_size]
+            
     if args.control and args.meth:
         chunk_all = np.concatenate([chunk_m,chunk_c],axis = 0)
         seq_all = np.concatenate([seq_m,seq_c],axis = 0)
-        seq_lens_all = np.concatenate([seq_len_m,seq_lens_c],axis = 0)
+        seq_lens_all = np.concatenate([seq_lens_m,seq_lens_c],axis = 0)
     elif args.control:
         chunk_all,seq_all,seq_lens_all = chunk_c,seq_c,seq_lens_c
     else:
-        chunk_all,seq_all,seq_lens_all = chunk_m,seq_m,seq_len_m
+        chunk_all,seq_all,seq_lens_all = chunk_m,seq_m,seq_lens_m
     out_f = args.output
     print("Save the merged dataset.")
+    if args.cm_ratio:
+        print("Final size: control - %d, methylation - %d, target size ratio %.1f, final size ratio %.1f"%(len(chunk_c),len(chunk_m),args.cm_ratio,len(chunk_c)/float(len(chunk_m))))
+    else:
+        print("Final size: control - %d, methylation - %d"%(len(chunk_c),len(chunk_m)))
     os.makedirs(out_f,exist_ok = True)
     np.save(os.path.join(out_f,'chunks.npy'),chunk_all)
     np.save(os.path.join(out_f,'seqs.npy'),seq_all)
@@ -109,12 +124,12 @@ if __name__ == "__main__":
                         help = "The output folder of the merged dataset.")
     parser.add_argument('--shift',action = "store_true", dest = "shift",
                         help = "If move the methylation signal according to the shift of the control median value.")
-    parser.add_argument('--equal_size',default = False, type = bool,
-                        help = "If make the size of control and methylation dataset equal by downsampling.")
+    parser.add_argument('--cm_ratio',default = None, type = float,
+                        help = "The size ratio of control/methylation, size will be adjusted to a maximum reads.")
     args = parser.parse_args(sys.argv[1:])
     if not args.control and not args.meth:
         raise ValueError("Neither --control or --meth being specified.")
-    if args.equal_size and (not args.control or not args.meth):
-        raise ValueError("Require both control and methylation dataset being provided when equal_size is set to true.")
+    if args.cm_ratio and (not args.control or not args.meth):
+        raise ValueError("Require both control and methylation dataset being provided when cm_ratio is set.")
     args.meth = args.meth.split(',')
     main(args)

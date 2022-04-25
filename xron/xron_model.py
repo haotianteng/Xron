@@ -11,6 +11,8 @@ from copy import deepcopy
 from functools import partial
 from itertools import permutations
 from fast_ctc_decode import beam_search, viterbi_search
+from numpy.random import default_rng
+from xron.utils.vq import vq
 import editdistance
 from typing import List,Dict
 
@@ -24,24 +26,31 @@ module_dict = {'Res1d':partial(xron.nn.Res1d,batch_norm = nn.LayerNorm),
 # PORE_MODEL_F = "pore_models/5mer_level_table.model"
 PORE_MODEL_F = "pore_models/m6A_5mer_level.model"
 N_BASE = 5 #AGCTM
-EMBEDDING_SIZE = 768
-CNN_KERNAL_COMP= 25
-CNN_STRIDE = 11
+EMBEDDING_SIZE = 128
+CNN_KERNAL_COMP= 20
+CNN_STRIDE = 10
 class CNN_CONFIG(object):
     CNN = {'N_Layer':3,
            'Layers': [{'layer_type':'Res1d','kernel_size':5,'stride':1,'out_channels':16},
                       {'layer_type':'Res1d','kernel_size':5,'stride':1,'out_channels':32},
-                      {'layer_type':'Res1d','kernel_size':CNN_KERNAL_COMP,'stride':CNN_STRIDE,'out_channels':EMBEDDING_SIZE}]
+                      {'layer_type':'Res1d','kernel_size':CNN_KERNAL_COMP,'stride':CNN_STRIDE,'out_channels':768}]
         }
 class RNN_CONFIG(CNN_CONFIG):
     RNN = {'layer_type':'BidirectionalRNN','hidden_size':768,'cell_type':'LSTM','num_layers':3}
 
 class FNN_CONFIG(RNN_CONFIG):
     FNN = {'N_Layer':2,
-           'Layers':[{'out_features':32,'bias':True,'activation':'Sigmoid'},
+           'Layers':[{'out_features':EMBEDDING_SIZE,'bias':True,'activation':'Sigmoid'},
                      {'out_features':N_BASE+1,'bias':True,'activation':'Linear'}]}
 class CONFIG(FNN_CONFIG):
-    pass
+    def __init__(self):
+        self.EMBEDDING= {'n_layers':self.CNN['N_Layer']+3}
+        if self.EMBEDDING['n_layers'] ==  (self.CNN['N_Layer']+2):
+            self.EMBEDDING['shape'] = EMBEDDING_SIZE*2
+        else:
+            self.EMBEDDING['shape'] = EMBEDDING_SIZE
+        self.EMBEDDING['mask_cnn_ratio'] = 0.
+            
 ### Critic Configuration
 class CRITIC_CNN(object):
     CNN = {'N_Layer':3,
@@ -64,21 +73,23 @@ class CRITIC_CONFIG(CRITIC_FNN):
 module_dict['RevRes1d'] = xron.nn.RevRes1d
 
 class DECODER_CONFIG(CONFIG):
-    CNN_DECODER = {'Input_Shape':EMBEDDING_SIZE,
-              'N_Layer':3,
-              'Layers': [{'layer_type':'RevRes1d','kernel_size':CNN_KERNAL_COMP,'stride':CNN_STRIDE,'out_channels':32},
-                         {'layer_type':'RevRes1d','kernel_size':5,'stride':1,'out_channels':32},
-                         {'layer_type':'RevRes1d','kernel_size':5,'stride':1,'out_channels':32}]
-             }
+    def __init__(self):
+        super().__init__()
+        self.CNN_DECODER = {'N_Layer':3,
+                            'Layers': [{'layer_type':'RevRes1d','kernel_size':CNN_KERNAL_COMP,'stride':CNN_STRIDE,'out_channels':32},
+                                       {'layer_type':'RevRes1d','kernel_size':5,'stride':1,'out_channels':32},
+                                       {'layer_type':'RevRes1d','kernel_size':5,'stride':1,'out_channels':32}]
+                            }
+        self.CNN_DECODER['Input_Shape'] = self.EMBEDDING["shape"]
     FNN_DECODER = {'N_Layer':1,
                    'Layers':[{'out_features':8,'bias':True,'activation':'ReLU'},
                              {'out_features':1,'bias':True,'activation':'Linear'}]}
-
+        
 class MM_CONFIG(DECODER_CONFIG):
     PORE_MODEL = {"PORE_MODEL_F":PORE_MODEL_F,
                   "N_BASE": N_BASE, #for AGCT is 4, for AGCTM is 5
                   'K' : 3,
-                  'N_EMBD':None, #Number of embbding, if None then it's set to N_BASE**K+1
+                  'N_EMBD':256, #Number of embbding, if None then it's set to N_BASE**K+1
                   "EMBEDDING_SIZE":EMBEDDING_SIZE,
                   "LOAD": False} #If load the pretrain pore model.
     DECODER = {"X_UPSAMPLING":5, #The scale factor of upsampling.
@@ -176,13 +187,30 @@ class CRNN(BASE):
                              in_channels = config.RNN['hidden_size']*directions)
         log_softmax = nn.LogSoftmax(dim = 2)
         self.net = nn.Sequential(*cnn,permute,*rnn,*fnn,log_softmax)
-        self.embedding_layers = [layer for layer in self.net[:self.config.CNN["N_Layer"]]]
+        self.embedding_layers = [layer for layer in self.net[:self.config.EMBEDDING['n_layers']]]
         self.ctc = nn.CTCLoss(zero_infinity = False)
+        self.nn_embd = vq
+        if self.config.EMBEDDING["mask_cnn_ratio"] > 0:
+            self.rng = default_rng()
     
-    def forward_wo_fnn(self,batch):
-        for layer in self.embedding_layers:
+    def forward_embedding(self,batch,embedding = None, training = True):
+        for layer_i,layer in enumerate(self.embedding_layers):
             batch = layer(batch)
-        return batch
+            if self.config.EMBEDDING["mask_cnn_ratio"] > 0 and layer_i == (self.config.CNN['N_Layer']-1) and training:
+                T = batch.shape[-1]
+                mask_T = int(T*self.config.EMBEDDING["mask_cnn_ratio"])
+                mask_idxs = self.rng.choice(T, size = mask_T, replace = False)
+                batch[:,:,mask_idxs] = 0 #Mask out channels
+        if embedding:
+            q = batch.permute([1,2,0]) # [L,N,C] -> [N,C,L]
+            sg_q = q.detach()
+            e,e_shadow = self.nn_embd(batch.permute([1,0,2]),embedding.weight) #[*,*,*] -> [N,L,C]
+            e = e.permute([0,2,1]) #[N,L,C] -> [N,C,L]
+            e_shadow = e_shadow.permute([0,2,1]) #[N,L,C] -> [N,C,L]
+            sg_e = e.detach()
+            return e,q,e_shadow,sg_q,sg_e
+        else:
+            return batch
     
     def ctc_loss(self,
                  posterior:Tensor,
@@ -481,7 +509,13 @@ class MM(nn.Module):
         else:
             if not self.n_embd:
                 n_embd = (self.N_BASE)**self.K+1
+            else:
+                n_embd = self.n_embd
             self.level_embedding = nn.Embedding(n_embd,self.embedding_size)
+            # if self.config.EMBEDDING['n_layers'] ==  (self.config.CNN['N_Layer']+4):
+            #     shift = 0.5 #The embedding output is from a sigmoid layer, so it's approximately sigmoid(0) ~ 0.5
+            # else:
+            #     shift = 0.
             self.level_embedding.weight.data.uniform_(-1./n_embd, 1./n_embd)
         self.upsampling = torch.nn.Upsample(scale_factor=config.DECODER['X_UPSAMPLING'],
                                      mode = 'nearest')
@@ -564,11 +598,11 @@ if __name__ == "__main__":
     batch_size = 88
     chunk_len = 2000
     test_batch = torch.randn(batch_size,1,chunk_len)
-    embedding = encoder.forward_wo_fnn(test_batch)
+    embedding = encoder.forward_embedding(test_batch)
     print("Input: ",test_batch.shape,"Encoded: ",embedding.shape)
     decoder_config = DECODER_CONFIG()
     decoder = REVCNN(decoder_config)
-    rc = decoder.forward(embedding).permute([0,2,1])
+    rc = decoder.forward(embedding.permute([1,2,0])).permute([0,2,1])
     print("Reconstructed:",rc.shape)
     # output = encoder.forward(test_batch)
     # mm_config = MM_CONFIG()

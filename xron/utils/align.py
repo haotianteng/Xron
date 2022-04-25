@@ -153,7 +153,14 @@ class MetricAligner(mp.Aligner):
     def ref_seq(self,seq:str,exclude_negative = False):
         """
         Return the reference sequence of the first hit of the alignment
-
+        An illustration of the ref_idx:
+            The alignment is
+            Rerference: - - A A C C C - G T T C
+            Query:      C C A A - - C G G A T C
+            query_idx:  0 1 2 3     4 5 6 7 8 9
+            ref_seq:    A A C C C G T T C
+            ref_idx:    2 3 3 4 4 6 7 8 9
+        
         Parameters
         ----------
         seq : str
@@ -162,7 +169,7 @@ class MetricAligner(mp.Aligner):
         Returns
         -------
         ref_seq: Related reference sequence 
-        ref_idx: Index reference (index relatively to the query/basecalled sequence).
+        ref_idx: Index reference (index relatively to the query/basecalled sequence), equal length of ref_seq.
 
         """
         hits = self.align_seq(seq)
