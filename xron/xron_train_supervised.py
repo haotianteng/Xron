@@ -153,6 +153,9 @@ def main(args):
     chunks = np.load(args.chunks,mmap_mode= 'r')
     reference = np.load(args.seq,mmap_mode= 'r')
     ref_len = np.load(args.seq_len,mmap_mode= 'r')
+    if len(chunks) > len(reference):
+        print("There are more chunks (%d) than the sequences (%d), it will be cut to equal to the sequences."%(len(chunks),len(reference)))
+        chunks = chunks[:len(reference)]
     print("Construct and load the model.")
     model_f = args.model_folder
     if args.retrain:

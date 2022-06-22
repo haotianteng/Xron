@@ -13,12 +13,15 @@ from itertools import permutations
 from fast_ctc_decode import beam_search, viterbi_search
 from numpy.random import default_rng
 from xron.utils.vq import vq
+from xron.utils.conformer import ConformerLayer
 import editdistance
 from typing import List,Dict
 
 ### Encoder Configuration
 module_dict = {'Res1d':partial(xron.nn.Res1d,batch_norm = nn.LayerNorm),
+               'Conformer':ConformerLayer,
                'BidirectionalRNN':xron.nn.BidirectionalRNN,
+               'Attention_norm':xron.nn.AttentionNormalize,
                'LSTM':nn.LSTM,
                'ReLU':nn.ReLU,
                'GRU':nn.GRU,
@@ -29,7 +32,10 @@ N_BASE = 5 #AGCTM
 EMBEDDING_SIZE = 128
 CNN_KERNAL_COMP= 20
 CNN_STRIDE = 10
-class CNN_CONFIG(object):
+class ATTENTION_CONFIG(object):
+    ATTENTION = {'N_Layer':1,
+                 'Layers':[{'layer_type':'Attention_norm','hidden_num':5}]}
+class CNN_CONFIG(ATTENTION_CONFIG):
     CNN = {'N_Layer':3,
            'Layers': [{'layer_type':'Res1d','kernel_size':5,'stride':1,'out_channels':16},
                       {'layer_type':'Res1d','kernel_size':5,'stride':1,'out_channels':32},
@@ -107,6 +113,15 @@ def copy_config(config):
 class BASE(nn.Module):
     """The base class define the operation constructing a NN from configuration.
     """
+    def _make_attention_norm(self,attention_config:dict,in_channels):
+        attention_config = deepcopy(attention_config)   
+        layers = []
+        for l in attention_config['Layers']:
+            block = module_dict[l.pop('layer_type')]
+            layers.append(block(in_channels = in_channels,**l))
+            in_channels = l['hidden_num']
+        return layers
+    
     def _make_cnn(self,cnn_config:dict,in_channels = 1):
         cnn_config = deepcopy(cnn_config)
         layers = []
@@ -134,7 +149,7 @@ class BASE(nn.Module):
                 layers.append(module_dict[activation]())
             in_channels = l['out_features']
         return layers
-        
+    
     def forward(self,batch):
         return self.net(batch)
 
@@ -178,6 +193,8 @@ class CRNN(BASE):
         """
         super().__init__()
         self.config = config
+        # att = self._make_attention_norm(config.ATTENTION, 1)
+        # cnn = self._make_cnn(config.CNN,in_channels = config.ATTENTION['Layers'][-1]['hidden_num'])
         cnn = self._make_cnn(config.CNN)
         permute = xron.nn.Permute([2,0,1]) #[N,C,L] -> [L,N,C]
         rnn = self._make_rnn(config.RNN,
@@ -186,6 +203,7 @@ class CRNN(BASE):
         fnn = self._make_fnn(config.FNN.copy(),
                              in_channels = config.RNN['hidden_size']*directions)
         log_softmax = nn.LogSoftmax(dim = 2)
+        # self.net = nn.Sequential(*att,*cnn,permute,*rnn,*fnn,log_softmax)
         self.net = nn.Sequential(*cnn,permute,*rnn,*fnn,log_softmax)
         self.embedding_layers = [layer for layer in self.net[:self.config.EMBEDDING['n_layers']]]
         self.ctc = nn.CTCLoss(zero_infinity = False)

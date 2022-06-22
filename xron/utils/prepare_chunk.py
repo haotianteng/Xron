@@ -28,7 +28,7 @@ alt_map = {'ins':'0','M':'A','U':'T'}
 complement = {'A': 'T', 'C': 'G', 'G': 'C', 'T': 'A'} 
 MIN_READ_SEQ_LEN = 100 #The filter of minimum sequence length.
 RNA_FILTER_CONFIG = {"min_rate":25,
-                     "min_seq_len":3,
+                     "min_seq_len":3, #this is in term of chunks
                      "max_gap_allow":2000,
                      "min_quality_score":0.85, #the minimum quality score for a chunk to be included into traning set.
                      "max_mono_prop":0.6}
@@ -177,9 +177,15 @@ def extract(args):
             if args.write_correction:
                 if not "Segmentation_%s"%(basecall_entry) in read_h['Analyses']:
                     read_h['Analyses/'].create_group("Segmentation_%s"%(basecall_entry))
-                if "Reference_corrected" in read_h['Analyses/Segmentation_%s/'%(basecall_entry)]:
+                    read_h['Analyses/Segmentation_%s/'%(basecall_entry)].create_group("Reference_corrected")
+                else:
+                    try:
+                        read_h['Analyses/Segmentation_%s/Reference_corrected'%(basecall_entry)]
+                    except KeyError:
+                        fail_read_count["No basecall"] += 1
+                        continue
                     del read_h['Analyses/Segmentation_%s/Reference_corrected'%(basecall_entry)]
-                read_h['Analyses/Segmentation_%s/'%(basecall_entry)].create_group("Reference_corrected")
+                    read_h['Analyses/Segmentation_%s/'%(basecall_entry)].create_group("Reference_corrected")
             if len(seq) < MIN_READ_SEQ_LEN:
                 fail_read_count["Read too short"]+=1
                 continue
@@ -212,11 +218,14 @@ def extract(args):
                 print("The signal length is %d and position length is (%d) for read %s of %s, check if the stride is correct."%(len(signal),len(pos),read_id,fast5_f))
                 fail_read_count["Sequence length is inconsistent with signal length"] +=1
                 continue
-            if len(signal)>len(pos) and args.padding:
-                #Insert values on random selected indexs.
-                padding = len(signal) - len(pos)
-                idxs = np.random.choice(len(pos),padding,replace = False)
-                pos = np.insert(pos,idxs,pos[idxs])
+            if len(signal)>len(pos):
+                if args.padding:
+                    #Insert values on random selected indexs.
+                    padding = len(signal) - len(pos)
+                    idxs = np.random.choice(len(pos),padding,replace = False)
+                    pos = np.insert(pos,idxs,pos[idxs])
+                else:
+                    signal = signal[:len(pos)]
             else:
                 pos = pos[:len(signal)]
             if len(signal) == 0:
@@ -230,7 +239,7 @@ def extract(args):
                 read_h['Analyses/Segmentation_%s/Reference_corrected'%(basecall_entry)].create_dataset("ref_sig_idx",data = ref_sig_idx)
                 read_h['Analyses/Segmentation_%s/Reference_corrected'%(basecall_entry)].create_dataset("ref_seq",data = ref_seq_aligned)
                 read_h['Analyses/Segmentation_%s/Reference_corrected'%(basecall_entry)].create_dataset("map_score",data = qs_aligned)
-            fail_read_count["Succeed"] += 1
+            fail_read_count["Processed"] += 1
             for x in np.arange(0,read_len,args.chunk_len):
                 if args.mode == "rna" or args.mode == "rna_meth":
                     if x+args.chunk_len > locs[0]:
@@ -260,8 +269,12 @@ def extract(args):
                     seqs.append('')
         meds.append(med)
         mads.append(mad)
-        offsets.append(read_h['channel_id'].attrs['offset'])
-        scales.append(read_h['channel_id'].attrs['range'])
+        if 'channel_id' in read_h:
+            offsets.append(read_h['channel_id'].attrs['offset'])
+            scales.append(read_h['channel_id'].attrs['range'])
+        else:
+            offsets.append(read_h['UniqueGlobalKey/channel_id'].attrs['offset'])
+            scales.append(read_h['UniqueGlobalKey/channel_id'].attrs['range'])
         read_ids.append(read_id)
         current_chunks = np.split(signal,np.arange(0,read_len,args.chunk_len))[1:]
         last_chunk = current_chunks[-1]
@@ -347,8 +360,8 @@ if __name__ == "__main__":
                         )
     parser.add_argument('--padding',
                         type = bool,
-                        default = False,
-                        help = "Padding the position to make the position has same length.")
+                        default = True,
+                        help = "Padding the position to make the position has same length, otherwise cut the signal.")
     parser.add_argument('--move_direction',
                         default = 'forward',
                         help = "The direction of the output Move matrix, for Guppy, it's forward, for Xron it's backward.")
@@ -398,7 +411,6 @@ if __name__ == "__main__":
             raise ValueError("Reference genome is required when extract the \
                              sequence.")
     os.makedirs(FLAGS.output,exist_ok = True)
-    print(FLAGS.write_correction)
     extract(FLAGS)
 
 

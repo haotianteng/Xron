@@ -6,6 +6,7 @@ Created on Mon Apr 19 13:59:01 2021
 from numpy import ndarray
 import os
 import h5py
+import itertools
 import numpy as np
 from typing import List
 from scipy.signal import find_peaks
@@ -103,12 +104,27 @@ def fast5_iter(fast5_dir,mode = 'r'):
             except Exception as e:
                 print("Reading %s failed due to %s."%(abs_path,e))
                 continue
-            for read_id in root:
-                read_h = root[read_id]
-                signal_h = read_h['Raw']
-                signal = np.asarray(signal_h[('Signal')],dtype = np.float32)
-                read_id = signal_h.attrs['read_id']
-                yield read_h,signal,abs_path,read_id.decode("utf-8")
+            if 'Raw' in root:
+                read_h = list(root['/Raw/Reads'].values())[0]
+                if 'Signal_Old' in read_h:
+                    signal = np.asarray(read_h[('Signal_Old')],dtype = np.float32)
+                else:
+                    signal = np.asarray(read_h[('Signal')],dtype = np.float32)
+                read_id = read_h.attrs['read_id']
+                if type(read_id) != type('a'):
+                    read_id = read_id.decode("utf-8")
+                yield root,signal,abs_path,read_id
+            else:
+                for read_id in root:
+                    try:
+                        read_h = root[read_id]
+                        signal_h = read_h['Raw']
+                        signal = np.asarray(signal_h[('Signal')],dtype = np.float32)
+                        read_id = signal_h.attrs['read_id']
+                        yield read_h,signal,abs_path,read_id.decode("utf-8")
+                    except Exception as e:
+                        print("Reading %s failed due to %s."%(read_id,e))
+                        continue
 
 def med_mad(x, factor=1.4826):
     """
@@ -119,6 +135,60 @@ def med_mad(x, factor=1.4826):
     mad = np.median(np.absolute(x - med)) * factor
     return med, mad
 
+
+def combine_normalization(signal:np.array, kmer_seqs:np.array)-> np.array:
+    """
+    Normalize the signal given the kmer sequence, the normalization is done in
+    a dwell-aware way, normalization first is calculated inside each dwell, and
+    then calculated among the dwells.
+
+    Parameters
+    ----------
+    seignal : np.array with shape [L]
+        The unnormalized signal.
+    kmer_seqs : np.array with shape [L]
+        The array with same shape as the signal gives the hidden 
+        representation (kmer) of the signal.
+
+    Returns
+    -------
+    norm_sig: np.array with shape [L]
+        Give the normalized signal.
+
+    """
+    combined = list(zip(signal,kmer_seqs))
+    grouped = [list(g) for k,g in itertools.groupby(combined,key = lambda x:x[1])]
+    grouped = [[x[0] for x in dwell] for dwell in grouped ]
+    dwell_mean = [np.mean(dwell) for dwell in grouped]
+    dwell_var = [np.var(dwell) for dwell in grouped]
+    return (signal - np.mean(dwell_mean))/np.sqrt(np.mean(dwell_var)+np.var(dwell_mean))
+
+def dwell_normalization(signal:np.array, kmer_seqs:np.array)-> np.array:
+    """
+    Normalize the signal given the kmer sequence, the normalization is done in
+    a dwell-aware way, normalization first is calculated inside each dwell, and
+    then calculated among the dwells.
+
+    Parameters
+    ----------
+    seignal : np.array with shape [L]
+        The unnormalized signal.
+    kmer_seqs : np.array with shape [L]
+        The array with same shape as the signal gives the hidden 
+        representation (kmer) of the signal.
+
+    Returns
+    -------
+    norm_sig: np.array with shape [L]
+        Give the normalized signal.
+
+    """
+    combined = list(zip(signal,kmer_seqs))
+    grouped = [list(g) for k,g in itertools.groupby(combined,key = lambda x:x[1])]
+    grouped = [[x[0] for x in dwell] for dwell in grouped ]
+    dwell_mean = [np.mean(dwell) for dwell in grouped if len(dwell)>1]
+    dwell_var = [np.var(dwell) for dwell in grouped if len(dwell)>1]
+    return (signal - np.mean(dwell_mean))/np.sqrt(np.mean(dwell_var))
 
 def norm_by_noisiest_section(signal, samples=100, threshold=6.0,offset = 0.0):
     """

@@ -10,6 +10,35 @@ from typing import List
 Conv1dk1 = partial(nn.Conv1d,kernel_size = 1)
 RevConv1dk1 = partial(nn.ConvTranspose1d, kernel_size = 1)
 
+class AttentionNormalize(nn.Module):
+    def __init__(self, 
+                 in_channels: int, 
+                 hidden_num: int = 5, 
+                 activation: nn.Module = nn.SiLU,
+                 norm: nn.Module = nn.LayerNorm):
+        super().__init__()
+        self.self_map = nn.Conv1d(in_channels,
+                                  hidden_num,
+                                  stride = 1,
+                                  kernel_size = 1)
+        self.activation = activation()
+        self.norm = norm(hidden_num)
+        self.wmf = torch.nn.Linear(in_channels,hidden_num)
+        self.wmb = torch.nn.Linear(in_channels,hidden_num)
+        self.wk = torch.nn.Linear(hidden_num,hidden_num)
+        self.wq = torch.nn.Linear(hidden_num,hidden_num)
+        
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x0 = self.self_map(x) #[N,C,L]
+        out = self.wmf(torch.mean(x,dim=2,keepdim=False))#[N,C]
+        out = out.unsqueeze(dim = 1)*self.wmb(x.permute(0,2,1)) + x0.permute(0,2,1) #[N,L,C]
+        k = self.wk(out)
+        q = self.wq(out)
+        scale = torch.mean(torch.bmm(k,q.permute(0,2,1)),dim = 2,keepdim = True) #[N,L,1]
+        out = out*scale + out
+        out = self.norm(out)#[N,L,C]
+        return out.permute(0,2,1) #[N,C,L]
+
 class Res1d(nn.Module):
     def __init__(self, 
                  in_channels: int, 

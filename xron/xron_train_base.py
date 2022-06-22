@@ -127,7 +127,7 @@ class Trainer(object):
                           map_location=self.device)
         for key,net in ckpt.items():
             if key in self.nets.keys():
-                self.nets[key].load_state_dict(net)
+                self.nets[key].load_state_dict(net,strict = False)
                 self.nets[key].to(self.device)
             else:
                 print("%s net is defined in the checkpoint but is not imported because it's not defined in the model."%(key))
