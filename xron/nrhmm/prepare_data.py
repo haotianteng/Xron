@@ -49,14 +49,16 @@ class Extractor(object):
         curr_kmer = ''
         kmer_range = seq_pos[(self.k-1)//2:-(self.k//2-1)]
         seq_duration = seq_pos[1:] - seq_pos[:-1]
+        seq_duration = seq_duration[(self.k-1)//2:len(sequence) - self.k//2]
         seq_duration = self._smooth_zero(seq_duration)
-        segemented_signal = signal[kmer_range[0]:kmer_range[-1]]
+        segmented_signal = signal[kmer_range[0]:kmer_range[-1]]
         for idx in np.arange((self.k-1)//2,len(sequence) - self.k//2):
             start = idx-(self.k-1)//2
             curr_kmer = sequence[start:start+self.k]
-            kmer_seq += [self.kmer2idx_dict[curr_kmer]]*seq_duration[idx]
+            kmer_seq += [self.kmer2idx_dict[curr_kmer]]*seq_duration[idx-(self.k-1)//2]
         kmer_seq = np.asarray(kmer_seq)
-        return segemented_signal,kmer_seq
+        assert(len(segmented_signal) == len(kmer_seq))
+        return segmented_signal,kmer_seq
     
     def _smooth_zero(self,duration_vector:np.array):
         """
@@ -148,7 +150,7 @@ def extract(args):
                 read_count["No basecall"]+=1
                 continue
         if args.meth:
-            ref_seq.replace("A","M")
+            ref_seq = ref_seq.replace("A","M")
         try:
             segmented_signal,kmer_seqs = extractor.kmer_decode(ref_seq, signal[::-1], ref_sig_idx)
         except ValueError:

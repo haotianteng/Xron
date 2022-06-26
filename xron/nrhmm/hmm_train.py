@@ -13,6 +13,7 @@ import numpy as np
 from tqdm import tqdm
 from typing import List, Dict
 from functools import partial
+from xron.utils.seq_op import length_mask
 from xron.nrhmm.hmm import RHMM,GaussianEmissions
 from xron.nrhmm.hmm_input import Kmer2Transition, Kmer_Dataset, Normalizer
 from torchvision import transforms
@@ -53,8 +54,9 @@ class RHMM_Trainer(Trainer):
                 self.global_step +=1
                 if (i_batch+1)%save_cycle==0:
                     time_elapsed = time.time() - start
+                    mse_loss = self.eval_step(batch)
                     self.save()
-                    print("Epoch %d: Batch %d, loss %f, time elapsed per batch %.2f"%(epoch_i, i_batch, loss, time_elapsed))
+                    print("Epoch %d: Batch %d, loss %f, rc loss %.2f, time elapsed per batch %.2f"%(epoch_i, i_batch, loss, mse_loss, time_elapsed))
                     self.save_loss()
 
     def train_step(self,batch):
@@ -64,9 +66,23 @@ class RHMM_Trainer(Trainer):
         transition_batch = batch['labels']
         if torch.sum(torch.isnan(signal_batch)):
             print("Found NaN input signal.")
-            return None,None
+            return None
         log_prob = net.forward(signal_batch, duration_batch, transition_batch)
         loss = -torch.logsumexp(log_prob, dim = 1).mean()
+        return loss
+    
+    def eval_step(self,batch):
+        net = self.hmm
+        signal_batch = batch['signal']
+        duration_batch = batch['duration']
+        transition_batch = batch['labels']
+        if torch.sum(torch.isnan(signal_batch)):
+            print("Found NaN input signal.")
+            return None
+        path,logit = net.viterbi_decode(signal_batch, duration_batch, transition_batch)
+        rc_signal = np.asarray([[net.emission.means[x].item() for x in p] for p in path.cpu().numpy()])
+        diff = (rc_signal - signal_batch[:,:,0].cpu().numpy())**2
+        loss = np.mean(diff[length_mask(duration_batch.cpu().numpy(),signal_batch.shape[1])])
         return loss
     
     def train_EM(self,epoches,save_cycle,save_folder):
@@ -82,9 +98,13 @@ class RHMM_Trainer(Trainer):
                     time_elapsed = time.time() - start
                     with torch.no_grad():
                         loss = self.train_step(batch)
+                        if loss is None:
+                            print("NaN loss detected, skip this training step.")
+                            continue
+                    mse_loss = self.eval_step(batch)
                     self.losses.append(loss.item())
                     self.save()
-                    print("Epoch %d: Batch %d, loss %f, time elapsed per batch %.2f"%(epoch_i, i_batch, loss, time_elapsed))
+                    print("Epoch %d: Batch %d, loss %f, MSE %.2f, time elapsed per batch %.2f"%(epoch_i, i_batch, loss, mse_loss, time_elapsed))
                     self.save_loss()
 
     
@@ -95,7 +115,7 @@ class RHMM_Trainer(Trainer):
         transition_batch = batch['labels']
         if torch.sum(torch.isnan(signal_batch)):
             print("Found NaN input signal.")
-            return None,None
+            return None
         with torch.no_grad():
             gamma = hmm.expectation(signal_batch, duration_batch, transition_batch)
             hmm.maximization(signal_batch,
@@ -199,10 +219,11 @@ def train(args):
                                 "A":1-args.methylation_proportion}
         #TODO: this has to be changed latter to adapt to multi base-modifications.
     chunks = np.load(os.path.join(args.input,"chunks.npy"),mmap_mode = 'r')
+    nan_filter = ~np.any(np.isnan(chunks),axis=1)
     durations = np.load(os.path.join(args.input,"durations.npy"),mmap_mode = 'r')
     kmers = np.load(os.path.join(args.input,"kmers.npy"),mmap_mode = 'r')
     k2t = Kmer2Transition(config['alphabeta'],config['k'],config['chunk_len'],config['kmer2idx_dict'],config['idx2kmer'],base_alternation = MODIFIED_BASES, base_prior = config['base_prior'],kmer_replacement = args.kmer_replacement)
-    dataset = Kmer_Dataset(chunks, durations, kmers,transform=transforms.Compose([k2t]))
+    dataset = Kmer_Dataset(chunks[nan_filter], durations[nan_filter], kmers[nan_filter],transform=transforms.Compose([k2t]))
     loader = DataLoader(dataset,batch_size = args.batch_size, shuffle = True)
     loader = DeviceDataLoader(loader,device = args.device)
     

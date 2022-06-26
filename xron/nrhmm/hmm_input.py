@@ -67,12 +67,13 @@ class Normalizer(object):
                  use_dwell:bool = True,
                  statistics:Callable = None,
                  no_scale:bool = False,
-                 min_dwell:int = 3):
+                 min_dwell:int = 3,
+                 effective_kmers:List[int] = None):
         self.use_dwell = use_dwell
         self.statistics = np.median if statistics is None else statistics
         self.no_scale = no_scale
         self.min_dwell = min_dwell
-    
+        self.effective_kmers = effective_kmers
     def __call__(self,
                  *args,
                  **kwargs):
@@ -108,7 +109,13 @@ class Normalizer(object):
     
         """
         gp = [list(y) for x,y  in itertools.groupby(zip(sig[:duration],path[:duration]),key = lambda x: x[1])]
-        dwells = [[y[0] for y in x] for x in gp if len(x)>=self.min_dwell]
+        if self.effective_kmers is None:
+            dwells = [[y[0] for y in x] for x in gp if len(x)>=self.min_dwell]
+        else:
+            dwells = [[y[0] for y in x] for x in gp if len(x)>=self.min_dwell and x[0][1] in self.effective_kmers]
+            if len(dwells) < 2:
+                print("Warning, there are very few dwells obtained from effective kmers, whole kmers list will be used instead.")
+                dwells = [[y[0] for y in x] for x in gp if len(x)>=self.min_dwell]
         return [self.statistics(x) for x in dwells]
         
     def rescale(self,

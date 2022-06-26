@@ -190,6 +190,13 @@ def dwell_normalization(signal:np.array, kmer_seqs:np.array)-> np.array:
     dwell_var = [np.var(dwell) for dwell in grouped if len(dwell)>1]
     return (signal - np.mean(dwell_mean))/np.sqrt(np.mean(dwell_var))
 
+def length_mask(length:np.array, max_length:int):
+    b = length.shape[0]
+    if len(length.shape) == 1:
+        length = length[:,None]
+    return np.tile(np.arange(max_length),b).reshape(b,max_length)<length
+        
+
 def norm_by_noisiest_section(signal, samples=100, threshold=6.0,offset = 0.0):
     """
     Normalise using the medmad from the longest continuous region where the
