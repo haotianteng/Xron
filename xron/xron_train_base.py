@@ -62,6 +62,13 @@ class Trainer(object):
         self.losses = []
         self.errors = []
     
+    def reload_data(self,train_dataloader, eval_dataloader = None):
+        self.train_ds = train_dataloader
+        if eval_dataloader is None:
+            self.eval_ds = train_dataloader
+        else:
+            self.eval_ds = eval_dataloader
+    
     def _get_device(self,device):
         if device is None:
             if torch.cuda.is_available():
@@ -127,7 +134,7 @@ class Trainer(object):
                           map_location=self.device)
         for key,net in ckpt.items():
             if key in self.nets.keys():
-                self.nets[key].load_state_dict(net,strict = False)
+                self.nets[key].load_state_dict(net,strict = True)
                 self.nets[key].to(self.device)
             else:
                 print("%s net is defined in the checkpoint but is not imported because it's not defined in the model."%(key))

@@ -8,18 +8,23 @@ import sys
 import h5py
 import torch
 import shutil
+import inspect
 import argparse
 import numpy as np
-from datetime import datetime
-from functools import partial
 from tqdm import tqdm
 from typing import Callable
+from datetime import datetime
+from itertools import groupby 
+from functools import partial
+from collections import defaultdict
+from fast_ctc_decode import beam_search
+from boostnano.boostnano_model import CSM
+from boostnano.boostnano_eval import evaluator
 from xron.xron_model import CRNN, CONFIG
 from xron.xron_train_base import load_config
-from xron.utils.seq_op import raw2seq,fast5_iter,norm_by_noisiest_section,diff_norm_by_noisiest_section,list2string
+from xron.utils.seq_op import raw2seq,fast5_iter,norm_by_noisiest_section,med_normalization,list2string
 from xron.utils.easy_assembler import simple_assembly_qs
-from collections import defaultdict
-from itertools import groupby 
+
 
 ##Debug module
 from timeit import default_timer as timer
@@ -37,19 +42,27 @@ def load(model_folder,net,device = 'cuda'):
         net.load_state_dict(ckpt)
     net.to(device)
 
-def chunk_feeder(fast5_f,config):
+def chunk_feeder(fast5_f,config,boostnano_evaluator = None):
     iterator = fast5_iter(fast5_f)
     e = config.EVAL
     batch_size,chunk_len,device,offset = e['batch_size'],e['chunk_len'],e['device'],e['offset']
     chunks,meta_info = [],[]
     for read_h,signal,fast5_f,read_id in tqdm(iterator):
         read_len = len(signal)
-        if config.EVAL['diff_norm']:
-            signal = diff_norm_by_noisiest_section(signal)[0].astype(np.float16)
+        if e['mode'] == 'rna' or e['mode'] == 'rna-meth':
+            if boostnano_evaluator is None:
+                signal = signal[::-1]
+                signal = norm_by_noisiest_section(signal,offset = offset)[0].astype(np.float32)
+            else:
+                (decoded,path,locs) = boostnano_evaluator.eval_sig(signal,1000)
+                locs = read_len - locs
+                signal = signal[::-1][:locs[0]]
+                if len(signal) == 0:
+                    continue
+                signal = med_normalization(signal).astype(np.float32)
+                read_len = len(signal)
         else:
-            signal = norm_by_noisiest_section(signal,offset = offset)[0].astype(np.float16)
-        if config.CTC['mode'] == "rna":
-            signal = signal[::-1]
+            signal = norm_by_noisiest_section(signal,offset = offset)[0].astype(np.float32)
         current_chunks = np.split(signal,np.arange(0,read_len,chunk_len))[1:]
         last_chunk = current_chunks[-1]
         last_chunk_len = len(last_chunk)
@@ -92,9 +105,9 @@ def qs(consensus, consensus_qs, output_standard='phred+33'):
         q_string = [chr(x + 33) for x in quality_score.astype(int)]
         return ''.join(q_string)
 
-def vaterbi_decode(logits:torch.tensor):
+def viterbi_decode(logits:torch.tensor):
     """
-    Vaterbi decdoing algorithm
+    Viterbi decdoing algorithm
 
     Parameters
     ----------
@@ -315,10 +328,27 @@ class Evaluator(object):
         self.curr_logits = self.net(batch).cpu().numpy()
         self.nn_time += timer() - start
     
+    def beam_decode(self,posteriors):
+        L,N,C = posteriors.shape
+        move = [np.zeros(L,dtype = int) for _ in np.arange(N)]
+        seqs = []
+        for i in np.arange(N):
+            p = np.exp(posteriors[:,i,:])
+            seq,path = beam_search(p,
+                                   "N"+self.config.CTC["alphabeta"],
+                                   beam_size = self.config.CTC["beam"],
+                                   beam_cut_threshold = self.config.CTC["beam_cut_threshold"])
+            move[i][path] = 1
+            seqs.append([self.config.CTC["alphabeta"].index(x) for x in seq])
+        return seqs,move
+    
     def run_once(self,batch,meta):
         self.run_nn(batch)
         start = timer()
-        sequence,move = vaterbi_decode(self.curr_logits)
+        if self.config.CTC["beam"] <= 1:
+            sequence,move = viterbi_decode(self.curr_logits)
+        else:
+            sequence,move = self.beam_decode(self.curr_logits)
         self.result_collections['qcs'] += list(np.max(self.curr_logits,axis = 2).T)
         self.result_collections['seqs'] += sequence
         self.result_collections['metas'] += meta
@@ -361,24 +391,26 @@ def main(args):
     if args.threads:
         torch.set_num_threads(args.threads)
     class CTC_CONFIG(CONFIG):
-        CTC = {"beam_size":args.beam,
-               "beam_cut_threshold":0.05,
+        CTC = {"beam_cut_threshold":0.05,
                "alphabeta": "ACGTM",
-               "mode":"rna"}
+               "mode":"rna",
+               "beam":args.beam}
     class CALL_CONFIG(CTC_CONFIG):
         EVAL = {"batch_size":args.batch_size,
                 "chunk_len":args.chunk_len,
                 'device':args.device,
                 'assembly_method':args.assembly_method,
                 'seq_batch':4000,
+                'mode':'rna',
                 'format':'fast5' if args.fast5 else 'fastq',
                 'offset':args.offset,
-                'diff_norm':args.diff_norm}        
+                'diff_norm':args.diff_norm}        #Diffnorm is deprecated setting this to True will have no effect
     config = CALL_CONFIG()
     print("Construct and load the model.")
     model_f = args.model_folder
     config_old = load_config(os.path.join(model_f,"config.toml"))
     config_old.EVAL = config.EVAL #Overwrite training config.
+    config_old.CTC = config.CTC
     config = config_old
     if args.config:
         config = load_config(args.config)
@@ -386,7 +418,15 @@ def main(args):
     load(args.model_folder,net,device = args.device)
     print("Begin basecall.")
     net.eval()
-    df = chunk_feeder(args.input, config)
+    boostnano_evaluator = None
+    if config.EVAL['mode'] == 'rna' or config.EVAL['mode'] == 'rna-meth':
+        if args.boostnano:
+            print("Loading BoostNano model.")
+            project_f = os.path.dirname(os.path.dirname(inspect.getfile(CSM)))
+            model_f = os.path.join(project_f,'BoostNano','model')
+            boostnano_net = CSM()
+            boostnano_evaluator = evaluator(boostnano_net,model_f)
+    df = chunk_feeder(args.input, config, boostnano_evaluator)
     writer = Writer(args.output,config)
     assembly_func = partial(simple_assembly_qs,
                             kernal = args.assembly_method,
@@ -415,11 +455,9 @@ if __name__ == "__main__":
     parser.add_argument('--device', default = 'cuda',
                         help="The device used for training, can be cpu or cuda.")
     parser.add_argument('--batch_size', default = None, type = int,
-                        help="Training batch size, default use the maximum size of the GPU memory, batch size and memory consume relationship: 200:6.4GB, 400:11GB, 800:20GB, 1200:30GB.")
+                        help="Evaluation batch size, default use the maximum size of the GPU memory, batch size and memory consume relationship: 200:6.4GB, 400:11GB, 800:20GB, 1200:30GB.")
     parser.add_argument('--chunk_len', default = 2000, type = int,
                         help="The length of each chunk signal.")
-    parser.add_argument('--beam',default = 1,type = int,
-                        help="The width of CTC beam search decoder.")
     parser.add_argument('--config', default = None,
                         help = "Training configuration.")
     parser.add_argument('--threads', type = int, default = None,
@@ -430,11 +468,20 @@ if __name__ == "__main__":
                         help = "Manual set a offset to the normalized signal.")
     parser.add_argument('--diff_norm', action="store_true", dest="diff_norm",
                         help = "Turn on the differential normalization.")
+    parser.add_argument('--beam', type = int, default = 1,
+                        help = "Beam size of the beam search decoder, default\
+                        is 1 where Viterbi decoder is used.")
+    parser.add_argument('--boostnano', action="store_true", dest="boostnano",
+                        help = "Enable boostnano preprocessing.")
     args = parser.parse_args(sys.argv[1:])
     MEMORY_PER_BATCH_PER_SIGNAL=13430. #KB
-    t = torch.cuda.get_device_properties(0).total_memory
-    if not args.batch_size:
-        args.batch_size = int(t/MEMORY_PER_BATCH_PER_SIGNAL/args.chunk_len//100*100)
-        print("Auto configure to use %d batch_size for a total of %.1f GB memory."%(args.batch_size,t/1024**3))
+    if args.batch_size is None:
+        if torch.cuda.is_available():
+            t = torch.cuda.get_device_properties(0).total_memory
+            args.batch_size = int(t/MEMORY_PER_BATCH_PER_SIGNAL/args.chunk_len//100*100)
+            print("Auto configure to use %d batch_size for a total of %.1f GB memory."%(args.batch_size,t/1024**3))
+        else:
+            args.batch_size = 1200
+            print("No GPU is detected, the batch_size is setting to default %d"%(args.batch_size))
     os.makedirs(args.output,exist_ok=True)
     main(args)

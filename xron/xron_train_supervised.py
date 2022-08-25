@@ -53,7 +53,7 @@ class SupervisedTrainer(Trainer):
         self.net = net
         self.grad_norm = config.TRAIN['grad_norm']
         
-    def train(self,epoches,optimizer,save_cycle,save_folder):
+    def train(self,epoches,optimizer,save_cycle,valid_cycle,save_folder,scheduler = None):
         self.save_folder = save_folder
         self._save_config()
         for epoch_i in range(epoches):
@@ -81,6 +81,14 @@ class SupervisedTrainer(Trainer):
                         self.errors.append(valid_error)
                         print("Epoch %d: Batch %d, loss %f, error %f valid_error %f, reducting_error %f"%(epoch_i, i_batch, loss,error, np.mean(valid_error),np.mean(valid_perror)))
                     self.save_loss()
+                if (i_batch+1)%valid_cycle==0:
+                    with torch.set_grad_enabled(False):
+                        eval_i,valid_batch = next(enumerate(self.eval_ds))
+                        valid_error,valid_perror = self.valid_step(valid_batch)
+                        self.errors.append(valid_error)
+                        print("Epoch %d: Batch %d, loss %f, error %f valid_error %f, reducting_error %f"%(epoch_i, i_batch, loss,error, np.mean(valid_error),np.mean(valid_perror)))
+                    if scheduler is not None:
+                        scheduler.step(valid_error)
                 
     def valid_step(self,batch):
         net = self.net
@@ -145,17 +153,21 @@ def main(args):
                  "batch_size":args.batch_size,
                  "grad_norm":2,
                  "keep_record":5,
-                 "eval_size":100,
-                 "optimizer":optimizers[args.optimizer],
+                 "eval_size":5000,
+                 "optimizer":args.optimizer,
                  "embedding_pretrain_model":args.embedding}
     config = TRAIN_CONFIG()
     print("Read chunks and sequence.")
     chunks = np.load(args.chunks,mmap_mode= 'r')
+    nan_filter = ~np.any(np.isnan(chunks),axis=1)
     reference = np.load(args.seq,mmap_mode= 'r')
     ref_len = np.load(args.seq_len,mmap_mode= 'r')
     if len(chunks) > len(reference):
         print("There are more chunks (%d) than the sequences (%d), it will be cut to equal to the sequences."%(len(chunks),len(reference)))
         chunks = chunks[:len(reference)]
+    chunks = chunks[nan_filter]
+    reference = reference[nan_filter]
+    ref_len = ref_len[nan_filter]
     print("Construct and load the model.")
     model_f = args.model_folder
     if args.retrain:
@@ -210,10 +222,13 @@ def main(args):
                 param.requires_grad = False
     lr = args.lr
     epoches = args.epoches
-    optim = config.TRAIN['optimizer'](net.parameters(),lr = lr)
+    optim = optimizers[config.TRAIN['optimizer']](net.parameters(),lr = lr)
+    # scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optim, 'min', patience = 10,factor = 0.3,verbose = True)
+    scheduler = None
     COUNT_CYCLE = args.report
+    valid_check_cycle = args.valid_cycle
     print("Begin training the model.")
-    t.train(epoches,optim,COUNT_CYCLE,model_f)
+    t.train(epoches,optim,COUNT_CYCLE,valid_check_cycle,model_f,scheduler = scheduler)
     
     
 if __name__ == "__main__":
@@ -239,6 +254,8 @@ if __name__ == "__main__":
                         help = "The number of epoches to train.")
     parser.add_argument('--report', default = 20, type = int,
                         help = "The interval of training rounds to report.")
+    parser.add_argument('--valid_cycle',default = 1000, type = int,
+                        help = "The number of cycles to validate the model.")
     parser.add_argument('--load', dest='retrain', action='store_true',
                         help='Load existed model.')
     parser.add_argument('--config', default = None,

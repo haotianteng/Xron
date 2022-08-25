@@ -16,6 +16,7 @@ from functools import partial
 from xron.utils.seq_op import length_mask
 from xron.nrhmm.hmm import RHMM,GaussianEmissions
 from xron.nrhmm.hmm_input import Kmer2Transition, Kmer_Dataset, Normalizer
+from xron.nrhmm.hmm_relabel import get_effective_kmers
 from torchvision import transforms
 from torch.utils.data.dataloader import DataLoader
 from xron.xron_train_base import Trainer,DeviceDataLoader
@@ -36,10 +37,6 @@ class RHMM_Trainer(Trainer):
         self.save_folder = save_folder
         self._save_config()
         for epoch_i in range(epoches):
-            if epoch_i > 0:
-                max_variance = np.max(self.hmm.emission.certainty.cpu().numpy())
-                print("Rescale the covariance to %.2f"%(max_variance))
-                self.hmm.emission.cov[:] = self.config.TRAIN["exploration"]*max_variance
             for i_batch, batch in enumerate(self.train_ds):
                 start = time.time()
                 loss = self.train_step(batch)
@@ -97,7 +94,7 @@ class RHMM_Trainer(Trainer):
                 if renew:
                     time_elapsed = time.time() - start
                     with torch.no_grad():
-                        loss = self.train_step(batch)
+                        loss = self.train_step(batch).detach()
                         if loss is None:
                             print("NaN loss detected, skip this training step.")
                             continue
@@ -106,7 +103,8 @@ class RHMM_Trainer(Trainer):
                     self.save()
                     print("Epoch %d: Batch %d, loss %f, MSE %.2f, time elapsed per batch %.2f"%(epoch_i, i_batch, loss, mse_loss, time_elapsed))
                     self.save_loss()
-
+                if (i_batch+1)%self.config.TRAIN['cov_update']==0:
+                    self.hmm.emission.update_cov(exploration = self.config.TRAIN["exploration"])
     
     def train_step_EM(self,batch,update_parameter):
         hmm = self.hmm
@@ -128,7 +126,7 @@ class RHMM_Trainer(Trainer):
 
 def trainable_kmer(idx2kmer:List,must_contain:str,exclude_bases:str)->np.array:
     """
-    Generate the trainble mask given the trainable bases
+    Generate the trainble mask given the trainable bases 
 
     Parameters
     ----------
@@ -204,72 +202,111 @@ def train(args):
                  "learning_rate":args.lr,
                  "weight_decay":args.weight_decay,
                  "momentum":args.momentum,
-                 "exploration":args.exploration}
+                 "exploration":args.exploration,
+                 "cov_update":args.reestimate_covariance,
+                 "transition_type":args.transition_format}
     train_config = TRAIN_CONFIG()
     MODIFIED_BASES = {"A":"M"}
     if args.trainable_bases is None:
         args.trainable_bases = "!"
     train_config.TRAIN["trainable_bases"] = args.trainable_bases
+    
     ### Read dataset
-    print("Load the dataset.")
+    print("Loading dataset.")
     if 'base_prior' not in config.keys():
         config['base_prior'] = None
     if args.methylation_proportion is not None:
         config['base_prior'] = {"M":args.methylation_proportion,
                                 "A":1-args.methylation_proportion}
         #TODO: this has to be changed latter to adapt to multi base-modifications.
-    chunks = np.load(os.path.join(args.input,"chunks.npy"),mmap_mode = 'r')
+    chunks = np.load(os.path.join(args.input,"chunks.npy"))
     nan_filter = ~np.any(np.isnan(chunks),axis=1)
-    durations = np.load(os.path.join(args.input,"durations.npy"),mmap_mode = 'r')
-    kmers = np.load(os.path.join(args.input,"kmers.npy"),mmap_mode = 'r')
-    k2t = Kmer2Transition(config['alphabeta'],config['k'],config['chunk_len'],config['kmer2idx_dict'],config['idx2kmer'],base_alternation = MODIFIED_BASES, base_prior = config['base_prior'],kmer_replacement = args.kmer_replacement)
-    dataset = Kmer_Dataset(chunks[nan_filter], durations[nan_filter], kmers[nan_filter],transform=transforms.Compose([k2t]))
-    loader = DataLoader(dataset,batch_size = args.batch_size, shuffle = True)
+    durations = np.load(os.path.join(args.input,"durations.npy"))
+    kmers = np.load(os.path.join(args.input,"kmers.npy"))
+    chunks,durations,kmers = chunks[nan_filter],durations[nan_filter],kmers[nan_filter]
+    print("Dataset loaded, begin transfer.")
+    k2t = Kmer2Transition(config['alphabeta'],
+                          config['k'],
+                          config['chunk_len'],
+                          config['kmer2idx_dict'],
+                          config['idx2kmer'],
+                          base_alternation = MODIFIED_BASES, 
+                          base_prior = config['base_prior'],
+                          kmer_replacement = args.kmer_replacement,
+                          out_format = "compact" if train_config.TRAIN['transition_type'] == "compact" else "sparse")
+    dataset = Kmer_Dataset(chunks, durations, kmers,transform=transforms.Compose([k2t]))
+    loader = DataLoader(dataset,batch_size = args.batch_size, shuffle = True,num_workers=5)
     loader = DeviceDataLoader(loader,device = args.device)
     
-    ### Initialize the model
+    ## Initialize the model
     print("Construct and initialize the model.")
     n_states = len(config['alphabeta'])**config['k']
     init_means = np.random.rand(n_states)-0.5
     init_covs = np.asarray([0.5]*n_states)
-    N,L = chunks.shape
-    norm = Normalizer(no_scale = True)
-    duration_mask = np.repeat(np.arange(L)[None,:],N,axis = 0)<durations[:,None]
-    if args.pretrain > 0:
-        renorm_chunks = chunks
-        for j in tqdm(np.arange(args.pretrain),desc = "Renorm the signal:"):
-            rc_signal = np.asarray([[init_means[x].item() for x in kmers[i]] for i in tqdm(np.arange(chunks.shape[0]),desc = "Generate reconstruction signal.")])
-            print("Renormalization.")
-            renorm_chunks = norm(renorm_chunks,rc_signal, durations,kmers)
-            print("Save the renormalized chunks.")
-            np.save(os.path.join(args.input,"chunks_renorm_%d.npy"%(j)),renorm_chunks)
-            chunks = renorm_chunks
-    if not args.retrain:
-        for i in tqdm(np.arange(n_states),desc = "Initialize parameter from the given chunks."):
-            selected_sig = chunks[np.logical_and(duration_mask,kmers == i)]
-            if len(selected_sig) > 0:
-                init_means[i] = np.mean(selected_sig)
-        np.save(os.path.join(args.model_folder,"initial_means0.npy"),init_means)
-        print("Rescale the signal using the initialized parameters.")
+    
+    ### Initialize parameter
+    if args.initialize:
+        N,L = chunks.shape
+        duration_mask = np.repeat(np.arange(L)[None,:],N,axis = 0)<durations[:,None]
+        if not args.retrain:
+            for i in tqdm(np.arange(n_states),desc = "Initialize parameter from the given chunks."):
+                selected_sig = chunks[np.logical_and(duration_mask,kmers == i)]
+                if len(selected_sig) > 0:
+                    init_means[i] = np.mean(selected_sig)
+            np.save(os.path.join(args.model_folder,"initial_means0.npy"),init_means)
+            print("Rescale the signal using the initialized parameters.")
+        
+    ### Building model
     trainable = trainable_kmer(train_config.DATA['idx2kmer'],*train_config.TRAIN["trainable_bases"].split('!'))
     emission = GaussianEmissions(init_means[:,None], init_covs[:,None],trainable = trainable)
-    hmm = RHMM(emission,normalize_transition=False,device = args.device,sparse_operation=True)
+    hmm = RHMM(emission,
+               normalize_transition=False,
+               device = args.device,
+               transition_operation=train_config.TRAIN['transition_type'],
+               index_mapping = None if train_config.TRAIN['transition_type'] != "compact" else k2t.idx_map)
     
-    ### Train
+    ## Train
     trainer = RHMM_Trainer(loader,hmm,config = train_config)
+    if args.retrain:
+        print("Load pretrained model.")
+        trainer.load(args.model_folder)
+        init_means = trainer.hmm.emission.means.cpu().detach().numpy()
+        init_covs = trainer.hmm.emission.cov.cpu().detach().numpy()
     lr = args.lr
     epoches = args.epoches
     optim = train_config.TRAIN['optimizer'](hmm.parameters(),lr = lr)
     
-    if args.retrain:
-        print("Load pretrained model.")
-        trainer.load(args.model_folder)
+    ### Preprocess before training
     if args.reinitialize:
         print("Initialize the modified kmers according to the current kmer model.")
         modified_means = initialize_modified_kmers(config['idx2kmer'],
                                                    trainer.hmm.emission.means.cpu().detach().numpy(),
                                                    modified_bases=MODIFIED_BASES)
         trainer.hmm.emission.reinitialize_means(torch.from_numpy(modified_means).to(args.device))
+    
+    ### Renormalize the signal
+    if args.effective == "!":
+        effective_kmers = None
+    else:
+        effective_kmers = get_effective_kmers(args.effective, 
+                                              train_config.DATA['idx2kmer'])
+    norm = Normalizer(use_dwell = True,
+                      no_scale = True,
+                      effective_kmers=effective_kmers)
+    if args.pretrain > 0:
+        renorm_chunks = chunks
+        for j in tqdm(np.arange(args.pretrain),desc = "Renorm the signal"):
+            rc_signal = np.asarray([[init_means[x].item() for x in kmers[i]] for i in tqdm(np.arange(chunks.shape[0]),desc = "Reconstruct signal")])
+            print("Renormalization.")
+            renorm_chunks = norm(renorm_chunks,rc_signal, durations,kmers)
+            print("Save the renormalized chunks.")
+            np.save(os.path.join(args.input,"chunks_renorm_%d.npy"%(j)),renorm_chunks)
+            chunks = renorm_chunks
+    renorm_dataset = Kmer_Dataset(chunks, durations, kmers,transform=transforms.Compose([k2t]))
+    loader = DataLoader(renorm_dataset,batch_size = args.batch_size, shuffle = True,num_workers=args.threads)
+    loader = DeviceDataLoader(loader,device = args.device)
+    trainer.reload_data(loader)
+    
     print("Begin training the model.")
     trainer.train_EM(epoches,args.report,args.model_folder)
     # trainer.train(epoches,optim,args.report,args.model_folder)
@@ -291,8 +328,12 @@ if __name__ == "__main__":
                         help = "The momentum value.")
     parser.add_argument("--exploration",type = float, default = 1.5,
                         help = "The factor of setting covariance to certainty, bigger number make the model explore more space of mean but may decrease the convergence speed.")
-    parser.add_argument("--report",type = int, default = 1,
+    parser.add_argument("--transition_format",type = str, default = "sparse",
+                        help = "The format that being used to calculate the transition step, can be sparse, dense and compact, default is sparse.")
+    parser.add_argument("--report",type = int, default = 10,
                         help = "Report the loss and save the model every report cycle.")
+    parser.add_argument("--reestimate_covariance", type = int, default = 20,
+                        help = "Reestimate the covariance every N batches.")
     parser.add_argument("--certain_methylation",action = "store_false", 
                         dest = "kmer_replacement", 
                         help = "If we are sure about the methylation state.")
@@ -310,8 +351,17 @@ if __name__ == "__main__":
                         help="The expecting methylation proportion.")
     parser.add_argument('--pretrain', type = int, default = 0,
                         help="The rounds to renormalize signal and pretrain.")
+    parser.add_argument("-e","--effective",type = str, default = "!",
+                        help = "A magic string gives the kmers that take into \
+                            account when doing normalization, for example, \
+                            A!M means kmers that must have A and must not \
+                            have M is taken into account.")
     parser.add_argument('--initialize_modified_kmers', dest = 'reinitialize',
                         action = "store_true", help = "Reinitialize the modifed kmers.")
+    parser.add_argument('--no_initialize', dest = "initialize",
+                        action = "store_false", help = "Turn off the parameters initialization.")
+    parser.add_argument('--threads',type = int, default = 0,
+                        help = "The number of threads used to load the data.")
     args = parser.parse_args(sys.argv[1:])
     os.makedirs(args.model_folder,exist_ok=True)
     train(args)

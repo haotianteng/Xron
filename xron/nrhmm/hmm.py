@@ -32,6 +32,9 @@ class GaussianEmissions(torch.nn.Module):
         self.trainable = torch.from_numpy(trainable).bool() if trainable is not None else torch.Tensor([1]*self.N).bool()
         self.cov = torch.nn.Parameter(torch.from_numpy(cov).float(),requires_grad = not fix_cov)
         self.certainty = torch.nn.Parameter(torch.zeros((self.N,self.K)),requires_grad = False)
+        self.momentum_mean = torch.nn.Parameter(torch.zeros((self.N,self.K)),requires_grad = False)
+        self.momentum_mean_square = torch.nn.Parameter(torch.zeros((self.N,self.K)),requires_grad = False)
+        self.global_step = torch.nn.Parameter(torch.tensor([1]*self.N),requires_grad = False)
         self.cache = None #The cache when Baum-Welch is used.
         self.epsilon = 1e-6 # A small number to prevent numerical instability
         self.fix_cov = fix_cov
@@ -77,6 +80,23 @@ class GaussianEmissions(torch.nn.Module):
 
         """
         self.cov[:] = torch.clamp(self.cov,min = self.epsilon)
+    
+    @torch.no_grad()        
+    def update_cov(self,
+                   method = "max",
+                   exploration = 1.):
+        """
+        Set the uniform covariance according to the uncertainty, this function
+        is useful when the covariance need to be reset during training.
+
+        """
+        if method == "max":
+            cov = torch.max(self.certainty[self.trainable])
+        else:
+            raise NotImplementedError("Other covariance reestimation methods \
+                                      beside max is not implemented .")
+        print("Rescale the covariance to %.2f"%(cov))
+        self.cov[:] = cov*exploration
     
     def _initialize_sufficient_statistics(self):
         self.cache = {"means":torch.zeros((self.N,self.K),device = self.device),
@@ -158,7 +178,8 @@ class RHMM(torch.nn.Module):
                  transition_module:torch.nn.Module = None,
                  device:str = None,
                  normalize_transition:bool = False,
-                 sparse_operation:bool = True):
+                 transition_operation:str = "sparse",
+                 index_mapping:List[np.array] = None):
         """
         The Restricted hidden Markov model (RHMM), like the Non-homogenous HMM,
         that is the transition matrix of the model is varying among time, but 
@@ -176,8 +197,12 @@ class RHMM(torch.nn.Module):
             The device to run the model, can be cpu or cuda:0
         normalize_transition : bool, optional
             If we want to normalize the transition matrix, default is False.
-        sparse_operation: bool, optional
-            If we use the sparse implementation of tensor production, default is True
+        transition_operation: str, optional default is sparse
+            The way of transition multiplication, default is sparse using
+            sparse matrix operation, can be dense or compact.
+        index_mapping: List[np.array], optional
+            A list of index mapping matrix [from_map_matrix,to_map_matrix] can 
+            be given if the transition matrix is given in a compact form.
         """
         super(RHMM, self).__init__()
         self.add_module("emission",emission_module)
@@ -188,11 +213,32 @@ class RHMM(torch.nn.Module):
         self.epsilon = 1e-6
         self.log_epsilon = torch.log(torch.tensor(self.epsilon)) 
         self.normalization = normalize_transition
-        self.sparse_operation = sparse_operation
+        possible_operations = ["sparse","dense","compact"]
+        max_funcs = {"sparse":self.transition_max_sparse,
+                               "dense":self.transition_max,
+                               "compact":self.transition_max_compact}
+        forward_funcs = {"sparse":self.transition_prob_sparse,
+                                   "dense":self.transition_prob,
+                                   "compact":self.transition_prob_compact}
+        backward_funcs = {"sparse":self.transition_backward_sparse,
+                          "dense":self.transition_backward,
+                          "compact":self.transition_backward_compact}
+        if transition_operation not in possible_operations:
+            raise ValueError("Transition operation type can only be "+ ','.join(possible_operations)+" but %s is given"%(transition_operation))
+        self.transition_operation = transition_operation
+        if self.transition_operation == "compact":
+            if index_mapping is None:
+                raise ValueError("Index mapping is required for compact transition operation.")
+            elif len(index_mapping) != 2:
+                raise ValueError("Require two index mapping matrix, map_from, map_to.")
+            else:
+                source_mapping, target_mapping = index_mapping
+                self.source_mapping = torch.from_numpy(source_mapping).long().to(device)
+                self.target_mapping = torch.from_numpy(target_mapping).long().to(device)
         if transition_module:
             self.add_module("transition",transition_module)
         self.to(self.device)
-    
+        
     def forward(self, observation:torch.Tensor, 
                 duration:torch.Tensor, 
                 transition:List,
@@ -219,7 +265,7 @@ class RHMM(torch.nn.Module):
         log_sums = log_alpha.logsumexp(dim=2)
         log_probs = torch.gather(log_sums, 1, duration.view(-1,1) - 1)
         return log_probs
-        
+    
     def _forward(self, observation:torch.Tensor, 
                 transition:np.array,
                 start_prob:torch.Tensor) -> np.array:
@@ -248,17 +294,27 @@ class RHMM(torch.nn.Module):
         batch_size,T,K = observation.shape     
         log_alpha = torch.zeros((batch_size,T,self.n_states),device = self.device)
         if start_prob is None:
-            start_prob = torch.sparse.sum(transition[0],dim = 2).to_dense() + self.epsilon
+            if transition[0].layout == torch.strided:
+                start_prob = torch.sum(transition[0],dim = 2) + self.epsilon
+            elif transition[0].layout == torch.sparse_coo:
+                start_prob = torch.sparse.sum(transition[0],dim = 2).to_dense() + self.epsilon
+            else:
+                raise TypeError("Transition tensor need to be either dense or coo sparse tensor.")
         log_alpha[:,0,:] = self.emission(observation[:,0,:]) + start_prob.log()
         emission = self.emission(observation)
         for t in np.arange(1,T):
-            if self.sparse_operation:
+            if self.transition_operation == "sparse":
                 assert not self.normalization, "Can't enable sparse operation will normalization is on."
                 #TODO: implement nomalization for sparse operation.
                 log_alpha[:,t,:] = emission[:,t,:] + self.transition_prob_sparse(transition[t],log_alpha[:,t-1,:])
-            else:
+            elif self.transition_operation == "dense":
                 curr_transition = self.to_dense(transition[t])
                 log_alpha[:,t,:] = emission[:,t,:] + self.transition_prob(curr_transition,log_alpha[:,t-1,:],normalization=self.normalization)
+                del curr_transition
+            elif self.transition_operation == "compact":
+                n_batch,n_states,b2 = transition[t].shape
+                curr_transition = transition[t][:,:,int(b2/2):]
+                log_alpha[:,t,:] = emission[:,t,:] + self.transition_prob_compact(curr_transition,log_alpha[:,t-1,:],normalization=self.normalization)
                 del curr_transition
             torch.cuda.empty_cache()
         return log_alpha
@@ -293,19 +349,27 @@ class RHMM(torch.nn.Module):
         log_beta[:,duration-1,:] = 1./self.n_states
         for t in np.arange(T-2,-1,-1):
             batch_mask = t<(duration-1)
-            if self.sparse_operation:
+            if self.transition_operation == "sparse":
                 if self.normalization:
                     raise ValueError("Can't enable sparse operation will normalization is on.")
                 update = self.transition_backward_sparse(transition[t],
                                                          self.emission(observation[:,t+1,:]),
                                                          log_beta[:,t+1,:])
                 log_beta[batch_mask,t,:] = update[batch_mask,:]
-            else:
+            elif self.transition_operation == "dense":
                 curr_transition = self.to_dense(transition[t])[batch_mask,:,:]
                 log_beta[batch_mask,t,:] = self.transition_backward(curr_transition,
                                                                     self.emission(observation[batch_mask,t+1,:]),
                                                                     log_beta[batch_mask,t+1,:],
                                                                     normalization = self.normalization)
+                del curr_transition
+            elif self.transition_operation == "compact":
+                n_batch,n_states,b2 = transition[t].shape
+                curr_transition = transition[t][batch_mask,:,:int(b2/2)]
+                log_beta[batch_mask,t,:] = self.transition_backward_compact(curr_transition,
+                                                                            self.emission(observation[batch_mask,t+1,:]),
+                                                                            log_beta[batch_mask,t+1,:],
+                                                                            normalization = self.normalization)
                 del curr_transition
             torch.cuda.empty_cache()
         return log_beta
@@ -386,14 +450,22 @@ class RHMM(torch.nn.Module):
         log_delta = torch.zeros((batch_size,T,self.n_states),device = self.device)
         viterbi_path = torch.zeros((batch_size,T),dtype = torch.long,device = self.device)
         if start_prob is None:
-            start_prob = torch.sparse.sum(transition[0],dim = 2).to_dense() + self.epsilon
+            if transition[0].layout == torch.strided:
+                start_prob = torch.sum(transition[0],dim = 2) + self.epsilon
+            else:
+                start_prob = torch.sparse.sum(transition[0],dim = 2).to_dense() + self.epsilon
         log_delta[:,0,:] = self.emission(observation[:,0,:]) + start_prob.log()
         for t in np.arange(1,T):
-            if self.sparse_operation:
+            if self.transition_operation == "sparse":
                 max_prob,max_idx = self.transition_max_sparse(transition[t], log_delta[:,t-1,:])
-            else:
+            elif self.transition_operation == "dense":
                 curr_transition = self.to_dense(transition[t])
                 max_prob, max_idx = self.transition_max(curr_transition, log_delta[:,t-1,:],normalization=self.normalization)
+                del curr_transition
+            elif self.transition_operation == "compact":
+                n_batch,n_states,b2 = transition[t].shape
+                curr_transition = transition[t][:,:,int(b2/2):]
+                max_prob, max_idx = self.transition_max_compact(curr_transition, log_delta[:,t-1,:],normalization=self.normalization)
                 del curr_transition
             log_delta[:,t,:] = self.emission(observation[:,t,:]) + max_prob
             path[:,t,:] = max_idx
@@ -465,6 +537,39 @@ class RHMM(torch.nn.Module):
         result[result == 0] = self.log_epsilon.to(self.device) + B.squeeze(dim = 1)[result == 0]
         return result
     
+    def transition_backward_compact(self,
+                                    transition:torch.Tensor,
+                                    log_emission:torch.Tensor,
+                                    log_beta:torch.Tensor,
+                                    normalization:bool = False):
+        """
+        Calculate the step backward log probability.
+        log beta_t^k = log sum_i exp{log T_t^{k,i} + log e^i(x_{t+1})+log beta_{t+1}^i}
+
+        Parameters
+        ----------
+        transition : torch.sparse_coo_tensor shape [B,N,b+1]
+            The compact transition matrix at current time point.
+        log_emission : torch.Tensor shape [B,N]
+            The log emission probability at time point t+1.
+        log_beta : torch.Tensor shape [B,N]
+            The t+1 log beta posterior probability.
+        normalization : bool, opotional
+            If we want to normalize the transition matrix.
+
+        Returns
+        -------
+        The log beta posterior probabtiliy at current time point t.
+
+        """
+        if normalization:
+            log_transition = normalize(transition,p=1,dim=2).log()
+        else:
+            log_transition = transition.log()
+        B = log_emission + log_beta
+        multiplication = B[:,self.target_mapping] #resulting shape [B,N,b+1]
+        return torch.logsumexp(log_transition + multiplication,dim = -1)
+    
     def transition_prob(self, 
                         transition_matrix:torch.Tensor, 
                         log_alpha:torch.Tensor,
@@ -516,6 +621,36 @@ class RHMM(torch.nn.Module):
         result[result == 0] = self.log_epsilon.to(self.device) + log_alpha[result == 0]
         return result
     
+    def transition_prob_compact(self,
+                                transition_matrix:torch.Tensor, 
+                                log_alpha:torch.Tensor,
+                                normalization:bool = False):
+        """
+        Calculate the transition probability given the compact transition
+        matrix and current forward probability.
+
+        Parameters
+        ----------
+        transition_matrix : torch.Tensor wish shape [B,N,b+1]
+            Current transition matrix, B is the batch size and N is the number
+            of states, b is the number of base.
+        log_alpha : torch.Tensor with shape [B,N]
+            Current time alpha matrix. The default is None.
+        normalization : bool, optional
+            If we want to normalize the transition matrix.
+        Returns
+        -------
+        The log transition probability with shape [B,N].
+
+        """
+        if normalization:
+            log_transition = normalize(transition_matrix,p=1,dim=2).log()
+        else:
+            log_transition = transition_matrix.log()
+        indexing = self.source_mapping
+        multiplication = log_alpha[:,indexing]
+        return torch.logsumexp(log_transition + multiplication,dim = -1)
+    
     def transition_max(self,
                         transition_matrix:torch.Tensor, 
                         log_delta:torch.Tensor,
@@ -545,6 +680,41 @@ class RHMM(torch.nn.Module):
         else:
             log_transition = transition_matrix.log()
         return torch.max(log_delta.unsqueeze(dim = 2) + log_transition, dim = 1)
+    
+    def transition_max_compact(self,
+                               transition_matrix:torch.Tensor, 
+                               log_delta:torch.Tensor,
+                               normalization:bool = True):
+        """
+        Calculate the transition probability of the most probable path given 
+        the current transition matrix and current forward probability.
+
+        Parameters
+        ----------
+        transition_matrix : torch.Tensor wish shape [B,N,N]
+            Current transition matrix, B is the batch size and N is the number
+            of states.
+        log_delta : torch.Tensor with shape [B,N]
+            Current time alpha matrix.
+        normalization : bool, optional
+            If we want to normalize the transition matrix.
+        Returns
+        -------
+        (log_prob, max_idx)
+        The log transition probability of most probable path and the argmax 
+        index.
+
+        """
+        if normalization:
+            log_transition = normalize(transition_matrix,p=1,dim=2).log()
+        else:
+            log_transition = transition_matrix.log()
+        indexing = self.source_mapping
+        multiplication = log_delta[:,indexing]
+        max_prob,max_idx = torch.max(log_transition + multiplication,dim = -1)
+        source_mapping_ex = self.source_mapping.expand(max_idx.shape[0],*self.source_mapping.shape)
+        max_idx = source_mapping_ex.gather(-1,max_idx.unsqueeze(-1)).squeeze(-1)
+        return max_prob,max_idx
     
     def transition_max_sparse(self,
                         transition_matrix:torch.Tensor, 
@@ -606,7 +776,7 @@ class RHMM(torch.nn.Module):
             return self.emission.update_parameters(lr = lr,
                                                    weight_decay = weight_decay,
                                                    momentum = momentum)
-        
+    
     def to_dense(self, sparse_matrix_array:Union[np.array,torch.sparse_coo_tensor]):
         """
         Make an array of sparse matrix into a dense 3D tensor.
@@ -654,6 +824,24 @@ def log_domain_matmul(log_A, log_B):
     out = torch.logsumexp(elementwise_sum, dim=1)
     return out
 
+def log_domain_matmul_mapping(log_A, log_B, index_map):
+    """
+    log_A : m x n
+    log_B : m x p x b or p x b
+    index_map : p x b
+    output : m x p matrix
+
+	The following log domain matrix multiplication with index mapping is calculated
+	computes out_{i,j} = logsumexp_k log_A_{i,k} + log_B_{i,k,j}
+	"""
+    dim_B = len(log_B.shape)
+    log_A = log_A.unsqueeze(dim = 2)
+    if dim_B == 2:
+        log_B = log_B.unsqueeze(dim = 0)
+    elementwise_sum = log_A + log_B
+    out = torch.logsumexp(elementwise_sum, dim=1)
+    return out
+
 def density(sparse_tensor:torch.sparse_coo_tensor):
     return len(sparse_tensor.indices())/torch.numel(sparse_tensor)
 
@@ -680,7 +868,7 @@ def log_domain_sparse_matmul(A:torch.sparse_coo_tensor, log_B:torch.Tensor, dim:
     shape_A = torch.tensor(A.shape)
     remain_dims = np.arange(n_dims_A)
     remain_dims = np.delete(remain_dims,dim)
-    remain_idxs = list(zip(*[idxs[x].tolist() for x in remain_dims]))
+    remain_idxs = idxs[remain_dims,:].T.tolist()
     update = update.tolist()
     key_func = lambda x: x[1]
     update = sorted(zip(update,remain_idxs),key = key_func)
@@ -737,6 +925,7 @@ def log_domain_sparse_max(A:torch.sparse_coo_tensor, log_B:torch.Tensor, dim:int
                                    size = shape_A[remain_dims].tolist(),
                                    device = A.device).to_dense(),max_idx
 
+
 def log_domain_sparse_product(A:torch.sparse_coo_tensor, log_B:torch.Tensor):
     """
     Do a sparse-dense tensor production.
@@ -774,6 +963,7 @@ if __name__ == "__main__":
     from torch.utils.data.dataloader import DataLoader
     from xron.xron_train_base import DeviceDataLoader
     from matplotlib import pyplot as plt
+    import time
     ## Construct the simulation data
     np.random.seed(2022)
     device = "cuda"
@@ -854,18 +1044,17 @@ if __name__ == "__main__":
     loader = DataLoader(dataset,batch_size = batch_size, shuffle = True)
     loader = DeviceDataLoader(loader,device = device)
     for epoch_i in np.arange(epoches_n):
-        if epoch_i > 0:
-            max_variance = np.max(hmm.emission.certainty.cpu().numpy())
-            print("Rescale the covariance to %.2f"%(max_variance))
-            hmm.emission.cov[:] = 2*max_variance
         for i,batch in enumerate(loader):
+            start_time = time.time()
             batch_x = batch['signal']
             transition = batch['labels']
             batch_label = batch['y']
             start = torch.zeros((batch_size,n_states)).to(device)
             batch_duration = batch['duration']
             with torch.no_grad():
+                s1 = time.time()
                 gamma = hmm.expectation(batch_x, batch_duration, transition)
+                print("Expectation time %.2f"%(time.time() - s1))
                 g = hmm.maximization(batch_x,gamma,update = (i%update_every_n==0),momentum = 0.9,lr = 1. ,weight_decay = 0.0)
             if i%update_every_n == 0:
                 error = np.linalg.norm(emission.means.cpu().squeeze(dim = 1).detach().numpy() - means,ord = 1)/n_states
@@ -874,7 +1063,10 @@ if __name__ == "__main__":
                 path,logit = hmm.viterbi_decode(batch_x, batch_duration, transition)
                 mask = np.arange(single_length)[None,:].repeat(batch_size,axis = 0)<batch_duration[:,None].detach().cpu().numpy()
                 accr = (batch_label[mask].detach().cpu().numpy() == path.detach().cpu().numpy()[mask]).sum()/(sum(batch_duration.detach().cpu().numpy()))
-                print("Epoch %d - Batch %d: loss %.2f, error %.2f, accuracy %.2f"%(epoch_i,i,loss,error,accr))
+                print("Epoch %d - Batch %d: loss %.2f, error %.2f, accuracy %.2f, time per batch %.2f"%(epoch_i,i,loss,error,accr,time.time()-start_time))
+                max_variance = np.max(hmm.emission.certainty.cpu().numpy())
+                print("Rescale the covariance to %.2f"%(max_variance))
+                hmm.emission.cov[:] = 2*max_variance
                 # print("Epoch %d - Batch %d: error %.2f, accuracy %.2f"%(epoch_i,i,error,accr))
                 if visual:
                     plt.plot(logit[0,np.arange(single_length),batch_label[0]].detach().cpu().numpy(),label = "Oirignal.")
@@ -885,3 +1077,4 @@ if __name__ == "__main__":
                     plt.plot(batch_x[0].cpu().numpy())
                     rc_sig = [hmm.emission.means[x].item() for x in path[0]]
                     plt.plot(rc_sig)
+                    

@@ -30,15 +30,15 @@ module_dict = {'Res1d':partial(xron.nn.Res1d,batch_norm = nn.LayerNorm),
 PORE_MODEL_F = "pore_models/m6A_5mer_level.model"
 N_BASE = 5 #AGCTM
 EMBEDDING_SIZE = 128
-CNN_KERNAL_COMP= 20
-CNN_STRIDE = 10
-class ATTENTION_CONFIG(object):
-    ATTENTION = {'N_Layer':1,
-                 'Layers':[{'layer_type':'Attention_norm','hidden_num':5}]}
-class CNN_CONFIG(ATTENTION_CONFIG):
+CNN_KERNAL_COMP= 25
+CNN_STRIDE = 11
+class CNN_CONFIG(object):
     CNN = {'N_Layer':3,
            'Layers': [{'layer_type':'Res1d','kernel_size':5,'stride':1,'out_channels':16},
                       {'layer_type':'Res1d','kernel_size':5,'stride':1,'out_channels':32},
+                      # {'layer_type':'Conformer','num_attention_heads':4,'ffn_dim':64,'depthwise_conv_kernel_size':7},
+                      # {'layer_type':'Conformer','num_attention_heads':4,'ffn_dim':64,'depthwise_conv_kernel_size':7},
+                      # {'layer_type':'Conformer','num_attention_heads':4,'ffn_dim':64,'depthwise_conv_kernel_size':7},
                       {'layer_type':'Res1d','kernel_size':CNN_KERNAL_COMP,'stride':CNN_STRIDE,'out_channels':768}]
         }
 class RNN_CONFIG(CNN_CONFIG):
@@ -113,22 +113,21 @@ def copy_config(config):
 class BASE(nn.Module):
     """The base class define the operation constructing a NN from configuration.
     """
-    def _make_attention_norm(self,attention_config:dict,in_channels):
-        attention_config = deepcopy(attention_config)   
-        layers = []
-        for l in attention_config['Layers']:
-            block = module_dict[l.pop('layer_type')]
-            layers.append(block(in_channels = in_channels,**l))
-            in_channels = l['hidden_num']
-        return layers
     
     def _make_cnn(self,cnn_config:dict,in_channels = 1):
         cnn_config = deepcopy(cnn_config)
         layers = []
         for l in cnn_config['Layers']:
-            block = module_dict[l.pop('layer_type')]
+            layer_type = l.pop('layer_type')
+            block = module_dict[layer_type]
+            if layer_type == "Conformer":
+                layers.append(xron.nn.Permute([0,2,1]))
             layers.append(block(in_channels = in_channels,**l))
-            in_channels = l['out_channels']
+            if layer_type == "Conformer":
+                layers.append(xron.nn.Permute([0,2,1]))
+            else:
+                #For Conformer out_channels = in_channels
+                in_channels = l['out_channels']
         return layers
     
     def _make_rnn(self,rnn_config,in_channels):
@@ -181,7 +180,7 @@ class CRITIC(BASE):
 
 class CRNN(BASE):
     def __init__(self,config:CONFIG):
-        """
+        """CRNN
         A Convolutional-Recurrent neural network for encoding the signal into
         base probability.
 

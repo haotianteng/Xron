@@ -6,6 +6,7 @@ Created on Sun Apr 17 18:21:00 2022
 @author: haotian teng
 """
 import os
+import copy
 import toml
 import torch
 import itertools
@@ -67,7 +68,7 @@ class Normalizer(object):
                  use_dwell:bool = True,
                  statistics:Callable = None,
                  no_scale:bool = False,
-                 min_dwell:int = 3,
+                 min_dwell:int = 5,
                  effective_kmers:List[int] = None):
         self.use_dwell = use_dwell
         self.statistics = np.median if statistics is None else statistics
@@ -113,9 +114,10 @@ class Normalizer(object):
             dwells = [[y[0] for y in x] for x in gp if len(x)>=self.min_dwell]
         else:
             dwells = [[y[0] for y in x] for x in gp if len(x)>=self.min_dwell and x[0][1] in self.effective_kmers]
-            if len(dwells) < 2:
-                print("Warning, there are very few dwells obtained from effective kmers, whole kmers list will be used instead.")
-                dwells = [[y[0] for y in x] for x in gp if len(x)>=self.min_dwell]
+            if len(dwells) < 5:
+                # print("Warning, there are very few dwells obtained from effective kmers, whole kmers list will be used instead.")
+                # dwells = [[y[0] for y in x] for x in gp if len(x)>=self.min_dwell]
+                dwells = [[0.]]
         return [self.statistics(x) for x in dwells]
         
     def rescale(self,
@@ -170,7 +172,7 @@ class Normalizer(object):
                       rc_sig:np.array,
                       duration:np.array,
                       path:np.array):
-        """
+        """https://researchcomputing.princeton.edu/support/knowledge-base/singularity
         Rescale the input signal using the reconstructed signal.
     
         Parameters
@@ -274,6 +276,7 @@ class Kmer2Transition(object):
         """
         bg_source, bg_target = [],[]
         bg_idx = []
+        self.from_idx = np.zeros((self.n_states,self.n_base+1))
         bg_vals = []
         for i in np.arange(self.n_states):
             kmer = self.idx2kmer[i]
@@ -285,16 +288,25 @@ class Kmer2Transition(object):
                 new_kmer = kmer[1:]+base
                 j = self.kmer2idx[new_kmer]
                 if i==j:
+                    curr_tgt.append(j)
                     continue
                 bg_source.append(i)
                 bg_target.append(j)
                 bg_vals.append(self.base_prior[base])
                 curr_tgt.append(j)
             bg_idx.append(curr_tgt)
-        self.bg = np.zeros((self.n_states,self.n_states))
+        self.bg = np.zeros((self.n_states,self.n_states),dtype = np.float32)
         self.bg[bg_source,bg_target] = np.array(bg_vals)
-        self.bg_idx = np.array(bg_idx,dtype=object)
-    
+        self.to_idx = np.array(bg_idx)
+        for i in np.arange(self.n_states):
+            kmer = self.idx2kmer[i]
+            self.from_idx[i][0] = i
+            for j,base in enumerate(self.alphabeta):
+                new_kmer = base + kmer[:-1]
+                new_idx = self.kmer2idx[new_kmer]
+                self.from_idx[i][j+1] = new_idx
+        self.idx_map = [self.from_idx,self.to_idx]
+        
     def _build_methylation_alternation(self):
         """
         Create the methylation kmer alternative dictionary, e.g. ACGMT:[ACGMT,
@@ -329,7 +341,7 @@ class Kmer2Transition(object):
         """
         for k,v in self.base_alternation.items():
             for x in v:
-                kmer.replace(x,k)
+                kmer = kmer.replace(x,k)
             v += k
             locs = findall(kmer,k)
             for x in itertools.product(v,repeat = len(locs)):
@@ -356,6 +368,7 @@ class Kmer2Transition(object):
     
     def kmer2transition(self,kmer_seq):
         transitions = []
+        # kmer_seq = copy.deepcopy(kmer_seq) #To avoid torch.dataLoader blowing up shared memory according to this issue:https://github.com/pytorch/pytorch/issues/11201
         condensation = [(k,len(list(g))) if k>=0 else (0,len(list(g))) for k,g in itertools.groupby(kmer_seq)]
         condensed_kmer_seqs = [x[0] for x in condensation]
         condensed_transitions = self._get_transition_pairs(condensed_kmer_seqs)
@@ -368,13 +381,13 @@ class Kmer2Transition(object):
     
     def kmer2compact_transition(self,kmer_seq):
         transitions = []
-        condensation = [(k,len(list(g))) for k,g in itertools.groupby(kmer_seq)]
+        condensation = [(k,len(list(g))) if k>=0 else (0,len(list(g))) for k,g in itertools.groupby(kmer_seq)]
         condensed_kmer_seqs = [x[0] for x in condensation]
         condensed_transitions = self._get_transition_pairs(condensed_kmer_seqs)
         for i,(kmer,period) in enumerate(condensation):
             curr = flatten(condensed_transitions[max(0,i-self.neighbour):i+self.neighbour+1])
-            curr_transition = self.compact_transition_tensor(curr, [1.0]*len(curr))
-            transitions += [curr_transition]*period
+            transition = self.compact_transition_tensor(curr, [1.0]*len(curr))
+            transitions += [transition]*period
         return transitions
     
     def compact_transition_tensor(self,src_tgt:List,value:List) -> torch.tensor:
@@ -396,10 +409,13 @@ class Kmer2Transition(object):
         and B is the number of bases, and 0 index always stand for kmers stay.
 
         """
-        trs = torch.zeros((self.n_states,self.n_base + 1),dtype = np.float)
+        trs = torch.zeros((self.n_states,self.n_base + 1),dtype = torch.float)
+        trt = torch.zeros((self.n_base + 1,self.n_states),dtype = torch.float)
         for (src,tgt),val in zip(src_tgt,value):
-            trs[src][np.where(self.bg_idx[src] == tgt)[0][0]] = val
-        return trs
+            trs[src][np.where(self.to_idx[src] == tgt)[0][0]] += val
+        for (src,tgt),val in zip(src_tgt,value):
+            trt[np.where(self.from_idx[tgt]==src)[0][0]][tgt] += val
+        return torch.cat((trs,trt.T),dim = 1)
         
     
     def _get_transition_pairs(self,condensed_kmer_seqs):
@@ -418,31 +434,35 @@ class Kmer2Transition(object):
         return transitions
     
     def __call__(self,sample:Dict):
-        kmer_seq = list(sample['labels'])
         func = self.kmer2transition if self.out_format == "sparse" else self.kmer2compact_transition
-        transformed = {key:(value if key != 'labels' else func(kmer_seq)) for key, value in sample.items()}
+        transformed = {key:(value if key != 'labels' else func(value)) for key, value in sample.items()}
         transformed['kmers'] = sample['labels']
         return transformed
         
 
 if __name__ == "__main__":
     from torchvision import transforms
+    torch.multiprocessing.set_sharing_strategy('file_system')
+    import time
     # kmers_f = "/home/heavens/BRIDGE_SCRATCH/NA12878_RNA_IVT/xron_output/extracted_kmers"
-    kmers_f = "/home/heavens/bridge_scratch/NA12878_RNA_IVT/xron_partial/extracted_kmers"
-    chunks = np.load(os.path.join(kmers_f,"chunks.npy"), mmap_mode= 'r')
-    durations = np.load(os.path.join(kmers_f,"durations.npy"), mmap_mode = 'r')
-    kmers = np.load(os.path.join(kmers_f,"kmers.npy"),mmap_mode = 'r')
+    kmers_f = "/home/haotian/bridge_scratch/NA12878_RNA_IVT/xron_partial/extracted_kmers"
+    chunks = np.load(os.path.join(kmers_f,"chunks.npy"))
+    durations = np.load(os.path.join(kmers_f,"durations.npy"))
+    kmers = np.load(os.path.join(kmers_f,"kmers.npy"))
     config = toml.load(os.path.join(kmers_f,"config.toml"))
     
     ### Test Kmer2Transition class
-    k2t = Kmer2Transition('ACGTM',5,4000,config['kmer2idx_dict'],config['idx2kmer'],base_alternation = {"A":"M"}, kmer_replacement = True, out_format = "sparse")
+    k2t = Kmer2Transition('ACGTM',5,4000,config['kmer2idx_dict'],config['idx2kmer'],base_alternation = {"A":"M"}, kmer_replacement = True, out_format = "compact")
     t = k2t.kmer2transition(kmers[0])
     
     ### Test data loader
     dataset = Kmer_Dataset(chunks, durations, kmers,transform=transforms.Compose([k2t]))
-    loader = data.DataLoader(dataset,batch_size = 10, shuffle = True)
+    loader = data.DataLoader(dataset,batch_size = 2, shuffle = True,num_workers=2)
+    start = time.time()
     for i_batch,batch in enumerate(loader):
+        print("Batch loading time %.2f"%(time.time() - start))
+        time.sleep(3)
+        start = time.time()
         # print(batch['signal'].shape)
         # print(batch['duration'].shape)
         # print(batch['labels'])
-        break

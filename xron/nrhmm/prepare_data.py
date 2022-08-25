@@ -11,7 +11,7 @@ import itertools
 import numpy as np
 from tqdm import tqdm
 from typing import List, Union
-from xron.utils.seq_op import fast5_iter,norm_by_noisiest_section,dwell_normalization,combine_normalization
+from xron.utils.seq_op import fast5_iter,med_normalization,dwell_normalization,combine_normalization
 
 class Extractor(object):
     def __init__(self,k,alphabeta):
@@ -161,7 +161,7 @@ def extract(args):
         elif args.normalization == "combine":
             norm_signal = combine_normalization(segmented_signal, kmer_seqs)
         elif args.normalization == "noise":
-            norm_signal,_,_ = norm_by_noisiest_section(segmented_signal)
+            norm_signal = med_normalization(segmented_signal)
         else:
             raise ValueError("Normalization method can only be dwell, combine or noise.")
         curr_chunks,curr_duration = chop(norm_signal,args.chunk_len)
