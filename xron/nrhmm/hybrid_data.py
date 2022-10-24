@@ -6,8 +6,10 @@ Created on Tue Aug  9 07:09:45 2022
 @author: heavens
 """
 import os
+import sys
 import toml
 import random
+import argparse
 import itertools
 from functools import partial
 from tqdm import tqdm
@@ -19,6 +21,7 @@ class LinkingGraph(object):
         self.config = config
         self.idx2kmer = config['idx2kmer']
         self.kmer2idx = config['kmer2idx_dict']
+        self.exploration = config['exploration']
         self.n_kmer = len(self.idx2kmer)
         self.nodes = {}
         self.invariant_kmers = []
@@ -61,15 +64,21 @@ class LinkingGraph(object):
         assert np.all(duration[0] == 0)
         return start, end, duration[1]
 
-    def sampling_once(self,max_len):
+    def sampling_once(self,max_len,add_noise = 0):
         segment = np.asarray([])
         path = np.asarray([],dtype = np.int16)
-        kmer = random.choice(list(self.nodes.keys()))#random choose a kmer to start
+        p = np.asarray([x.weight for x in self.nodes.values()])
+        if np.random.random() < exploration:
+            kmer = np.random.choice(list(self.nodes.keys()),p = p/p.sum())#random choose a kmer to start
+        else:
+            kmer = list(self.nodes.keys())[np.argmax(p)]
         while len(segment)<max_len:
             node = self.nodes[kmer]
-            curr_seg,curr_path,kmer = node.sampling()
+            curr_seg,curr_path,kmer = node.sampling(exploration = self.exploration)
             segment = np.concatenate((segment,curr_seg),axis = 0)
             path = np.concatenate((path,curr_path),axis = 0)
+        if add_noise > 0:
+            segment += np.random.normal(loc = 0.0,scale = add_noise,size = len(segment))
         return segment[:max_len],path[:max_len]
     
     def sampling(self,max_len,n_times):
@@ -85,6 +94,9 @@ class KmerNode(object):
     def __init__(self,kmer):
         self.kmer = kmer
         self.segments = []
+        self.visits = [] #Sampling times
+        self.weight = 0.
+        self.epsilon = 1e-6
         self.head_stickers = []
         self.tail_stickers = []
         self.paths = []
@@ -110,9 +122,18 @@ class KmerNode(object):
         self.tail_stickers.append(segment[path == path[-1]])
         self.paths.append(path[path != path[-1]])
         self.next_kmers.append(path[-1])
+        self.visits.append(self.epsilon)
+        self.weight += 1
         
-    def sampling(self):
-        i = random.randint(0,len(self.segments)-1)
+    def sampling(self,exploration = 0.1):
+        p = np.sqrt(1/np.asarray(self.visits)) #UCB score.
+        p = p/sum(p)
+        if np.random.random() < exploration:
+            i = np.random.choice(len(self.segments), p=p)
+        else:
+            i = np.argmax(p)
+        self.visits[i] += 1
+        self.weight = len(self.visits)/np.sqrt(sum(self.visits))
         return self.segments[i],self.paths[i],self.next_kmers[i]
 
 def kmers2seq(kmers,idx2kmer):
@@ -120,9 +141,17 @@ def kmers2seq(kmers,idx2kmer):
     seqs = [idx2kmer[x][0] for x in merged]
     return ''.join(seqs) + idx2kmer[merged[-1]][1:]
 
-def load_data(data_f,mmap_mode = "r"):
+def load_data(data_f,mmap_mode = "r",max_n = None,shuffle = False):
     chunks = np.load(os.path.join(data_f,"chunks.npy"),mmap_mode = mmap_mode)
     paths = np.load(os.path.join(data_f,"path.npy"),mmap_mode = mmap_mode)
+    if max_n is not None:
+        chunks = chunks[:max_n]
+        paths = paths[:max_n]
+    if shuffle:
+        perm = np.arange(len(chunks))
+        perm = np.random.permutation(perm)
+        chunks = chunks[perm]
+        paths = paths[perm]
     return chunks,paths
 
 def max_loop(seq,max_loop_size = 10):
@@ -147,30 +176,57 @@ def a2m(kmer_i,idx2kmer,kmer2idx):
         return kmer2idx[idx2kmer[kmer_i].replace('A','M')]
 
 if __name__ == "__main__":
-    home_f = os.path.expanduser("~")
-    control_folder = home_f + "/bridge_scratch/ime4_Yearst/IVT/control/rep1/kmers_guppy_4000_noise"
-    m6a_folder = home_f + "/bridge_scratch/ime4_Yearst/IVT/m6A/rep2/kmers_guppy_4000_noise"
-    sample_n = 100000
-    mix_ratio = 1 #M/A ratio
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--control","-c",required = True,type = str,help = "The control foldaer.")
+    parser.add_argument("--modified","-m",required = True,type = str,help = "The modification folder.")
+    parser.add_argument("--output","-o",required = True,type = str,help = "The output folder.")
+    parser.add_argument("--sample_n","-n",type = int,default = 100000,help = "The number of sampling.")
+    parser.add_argument("--mixture","-mix",type = float,default = 0.5,help = "The mixture ratio of the control and the modified.")
+    parser.add_argument("--exploration","-e",type = float,default = 0.1,help = "The exploration ratio.")
+    parser.add_argument("--max",type = int,default = None,help = "The maximum number of segments to load.")
+    args = parser.parse_args(sys.argv[1:])
+
+    ##Testing code
+    # home_f = os.path.expanduser("~")
+    # scratch_f = home_f + "/bridge_scratch"
+    # control_folder = scratch_f + "/Training_Datasets/EVA+NA12878IVT+ELIGOS+ONTBACTERIAMIX/control/"
+    # modified_folder = scratch_f + "/Training_Datasets/EVA+NA12878IVT+ELIGOS+ONTBACTERIAMIX/modified/"
+    # sample_n = 500000
+    # max_n = None #For testing.
+    # mix_ratio = 0.333 #M/A ratio
+    # exploration = 0.2 #The decay of weight of edge after being samplinged.
+    # out_f = home_f + "/Training_Datasets/cross_link_%dpct/"%(int(100*mix_ratio/(1.+mix_ratio)))
+
+    ##Running code
+    control_folder = args.control
+    modified_folder = args.modified
+    sample_n = args.sample_n
+    mix_ratio = args.mixture
+    exploration = args.exploration
+    out_f = args.output
+    max_n = args.max
+    
     config = toml.load(os.path.join(control_folder,"config.toml"))
-    chunks_control,path_control = load_data(control_folder)
-    chunks_m6A,path_m6A = load_data(m6a_folder)
-    if chunks_control.shape[0]*mix_ratio>chunks_m6A.shape[0]:
-        shrink = int(chunks_m6A.shape[0]/mix_ratio)
-        chunks_control = chunks_control[:shrink]
-        path_control = path_control[:shrink]
-    else:
-        shrink = int(chunks_control.shape[0]*mix_ratio)
-        chunks_m6A = chunks_m6A[:shrink]
-        path_m6A = path_m6A[:shrink]
+    config['exploration'] = exploration
     m2a_p = partial(m2a,idx2kmer = config['idx2kmer'],kmer2idx = config['kmer2idx_dict'])
     a2m_p = partial(a2m,idx2kmer = config['idx2kmer'],kmer2idx = config['kmer2idx_dict'])
     lg = LinkingGraph(config)
     lg.build_invariant_kmers(['A','M'])
+    
+    chunks_control,path_control = load_data(control_folder,max_n = max_n,shuffle = True)
+    chunks_modified,path_modified = load_data(modified_folder,max_n = max_n,shuffle = True)
+    if chunks_control.shape[0]*mix_ratio>chunks_modified.shape[0]:
+        shrink = int(chunks_modified.shape[0]/mix_ratio)
+        chunks_control = chunks_control[:shrink]
+        path_control = path_control[:shrink]
+    else:
+        shrink = int(chunks_control.shape[0]*mix_ratio)
+        chunks_modified = chunks_modified[:shrink]
+        path_modified = path_modified[:shrink]
     print("Add control data (%d chunks) into the graph."%(chunks_control.shape[0]))
     lg.add_reads(chunks_control,path_control,transition = m2a_p)
-    print("Add m6A data (%d chunks) into the graph.")
-    lg.add_reads(chunks_m6A,path_m6A,transition = a2m_p)
+    print("Add modified data (%d chunks) into the graph.")
+    lg.add_reads(chunks_modified,path_modified,transition = a2m_p)
     print("Sampling the data.")
     s,p = lg.sampling(chunks_control.shape[1],sample_n)
     seqs = np.asarray([kmers2seq(x,lg.idx2kmer) for x in tqdm(p,total = len(p),desc = "Transfer to sequence")])
@@ -180,7 +236,6 @@ if __name__ == "__main__":
     print("%d samples left after filtering"%(len(s)))
     print("Saving the data")
     print("Maximum sequence length %d"%(np.max(seqs_len)))
-    out_f = home_f + "/Training_Datasets/cross_link_%dpct/"%(int(mix_ratio/(1.+mix_ratio)))
     os.makedirs(out_f,exist_ok = True)
     np.save(os.path.join(out_f,"chunks.npy"),s)
     np.save(os.path.join(out_f,"path.npy"),p)

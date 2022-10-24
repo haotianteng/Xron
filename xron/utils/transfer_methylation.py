@@ -10,7 +10,7 @@ import pandas as pd
 import argparse
 import itertools
 from typing import Tuple,Iterable
-def load_data(prefix:str)->Tuple[np.array,Iterable,np.array,np.array,np.array]:
+def load_data(prefix:str,renorm = False,read_meta = False)->Tuple[np.array,Iterable,np.array,np.array,np.array]:
     """
     Load data from the prefix folder
 
@@ -18,6 +18,8 @@ def load_data(prefix:str)->Tuple[np.array,Iterable,np.array,np.array,np.array]:
     ----------
     prefix : str
         The folder contains the chunk data and meta information.
+    renorm : bool
+        If the renomalization chunks is loaded or the orignal chunks.
 
     Returns
     -------
@@ -33,40 +35,48 @@ def load_data(prefix:str)->Tuple[np.array,Iterable,np.array,np.array,np.array]:
         DESCRIPTION.
 
     """
-    chunk_f = os.path.join(prefix,"chunks.npy")
+    if renorm:
+        chunk_f = os.path.join(prefix,"chunks_renorm.npy")
+    else:
+        chunk_f = os.path.join(prefix,"chunks.npy")
     seq_f = os.path.join(prefix,"seqs.npy")
     seq_lens_f = os.path.join(prefix,"seq_lens.npy")
     mm_f = os.path.join(prefix,"mm.npy")
     meta_f = os.path.join(prefix,"meta.csv")
-    chunk = np.load(chunk_f)
-    seq = np.load(seq_f)
-    seq_lens = np.load(seq_lens_f)
-    mm = np.load(mm_f,allow_pickle=True)
-    read_ids = mm[-1]
-    metas = pd.read_csv(meta_f,delimiter = " ",header = None)
-    metas = metas.dropna(how = 'all')
-    ids = list(metas[1])
-    mask = [True if id in ids else False for id in read_ids]
-    mad,med,meth,offsets,scales,read_ids = [list(itertools.compress(x,mask)) for x in mm]
-    mms = np.asarray([mad,med])
-    chunk_count = [len(list(j)) for i,j in itertools.groupby(ids)]
-    mms_full = np.repeat(mms,chunk_count,axis = 1)
+    chunk = np.load(chunk_f,mmap_mode = "r")
+    seq = np.load(seq_f,mmap_mode = "r")
+    seq_lens = np.load(seq_lens_f,mmap_mode = "r")
+    if os.path.exists(mm_f) and read_meta:
+        mm = np.load(mm_f,allow_pickle=True)
+        read_ids = mm[-1]
+        metas = pd.read_csv(meta_f,delimiter = " ",header = None)
+        metas = metas.dropna(how = 'all')
+        ids = list(metas[1])
+        mask = [True if id in ids else False for id in read_ids]
+        mad,med,meth,offsets,scales,read_ids = [list(itertools.compress(x,mask)) for x in mm]
+        mms = np.asarray([mad,med])
+        chunk_count = [len(list(j)) for i,j in itertools.groupby(ids)]
+        mms_full = np.repeat(mms,chunk_count,axis = 1)
+    else:
+        mms = None
+        mms_full = None
     return chunk,seq,seq_lens,mms,mms_full
 
 def main(args):
     chunk_m,seq_m,seq_lens_m= [],[],[]
     print("Read control dataset.")
     if args.control:
-        chunk_c,seq_c,seq_lens_c,mms_c,mms_full_c= load_data(args.control)
+        chunk_c,seq_c,seq_lens_c,mms_c,mms_full_c= load_data(args.control,args.renorm)
     else:
         chunk_c,seq_c,seq_lens_c,mms_c,mms_full_c = [],[],[],[],[]
     print("Read methylation dataset.")
     m_size = 0
     if args.meth:
         for i,m in enumerate(args.meth):
-            chunk,seq,seq_lens,mms,mms_full = load_data(m)
-            print("Transfer sequence into methylation.")
-            seq = np.array([x.replace('A','M') for x in seq])
+            chunk,seq,seq_lens,mms,mms_full = load_data(m,args.renorm,read_meta = args.shift)
+            if args.base_replace:
+                print("A -> M transfer.")
+                seq = np.array([x.replace('A','M') for x in seq])
             if args.shift:
                 offset = np.mean(mms_c[1,:])-np.mean(mms[1,:])
                 offset /= mms_full[0,:]
@@ -75,14 +85,20 @@ def main(args):
             seq_m.append(seq)
             seq_lens_m.append(seq_lens)
             m_size += chunk.shape[0]
-            print(" Methylation %d dataset shape:%d"%(i+1,chunk.shape[0]))
+            print(" Methylation dataset %d with shape:%d"%(i+1,chunk.shape[0]))
         print("Control dataset size:%d"%(chunk_c.shape[0]))
         print("Methylation datasets total size:%d"%(m_size))
-        chunk_m = np.concatenate(chunk_m,axis = 0)
-        seq_m = np.concatenate(seq_m,axis = 0)
-        seq_lens_m = np.concatenate(seq_lens_m,axis = 0)
+        if len(args.meth) == 1:
+            chunk_m = chunk_m[0]
+            seq_m = seq_m[0]
+            seq_lens_m = seq_lens_m[0]
+        else:
+            chunk_m = np.concatenate(chunk_m,axis = 0)
+            seq_m = np.concatenate(seq_m,axis = 0)
+            seq_lens_m = np.concatenate(seq_lens_m,axis = 0)
     else:
         chunk_m,seq_m,seq_lens_m = [],[],[]
+    print("Resize the dataset according to cm_ratio.")
     if args.cm_ratio:
         size_c = len(chunk_c)
         size_m = len(chunk_m)
@@ -91,9 +107,9 @@ def main(args):
             shrink_size = int(size_m*args.cm_ratio)
             chunk_c,seq_c,seq_lens_c = chunk_c[:shrink_size],seq_c[:shrink_size],seq_lens_c[:shrink_size]
         elif curr_ratio < args.cm_ratio:
-            shrunk_size = int(size_c/args.cm_ratio)
+            shrink_size = int(size_c/args.cm_ratio)
             chunk_m,seq_m,seq_lens_m = chunk_m[:shrink_size],seq_m[:shrink_size],seq_lens_m[:shrink_size]
-            
+    print("Merge control and methylation datasets.")
     if args.control and args.meth:
         chunk_all = np.concatenate([chunk_m,chunk_c],axis = 0)
         seq_all = np.concatenate([seq_m,seq_c],axis = 0)
@@ -126,10 +142,15 @@ if __name__ == "__main__":
                         help = "If move the methylation signal according to the shift of the control median value.")
     parser.add_argument('--cm_ratio',default = None, type = float,
                         help = "The size ratio of control/methylation, size will be adjusted to a maximum reads.")
+    parser.add_argument('--no_base_replace', action = "store_false",dest = "base_replace",
+                        help = "If the bases in methylated dataset being transferred from A to M.")
+    parser.add_argument('--renorm',action="store_true",dest="renorm",
+                        help = "Read the renormalization data instead of original data.")
     args = parser.parse_args(sys.argv[1:])
     if not args.control and not args.meth:
         raise ValueError("Neither --control or --meth being specified.")
     if args.cm_ratio and (not args.control or not args.meth):
         raise ValueError("Require both control and methylation dataset being provided when cm_ratio is set.")
     args.meth = args.meth.split(',')
+    print(args.base_replace)
     main(args)

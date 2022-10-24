@@ -1,6 +1,7 @@
 """
 Created on Wed Apr 27 09:01:02 2022
-
+This script is writen to load a HMM model and used it to summirize the output 
+of a basecalled dataset.
 @author: Haotian Teng
 """
 import os
@@ -9,11 +10,13 @@ import toml
 import torch
 import itertools
 import numpy as np
+from scipy.stats import binom
 from tqdm import tqdm
 from matplotlib import pyplot as plt
 from xron.nrhmm.hmm import GaussianEmissions, RHMM
 from xron.nrhmm.hmm_relabel import Methylation_DP_Aligner
 from xron.nrhmm.hmm_input import Kmer2Transition, Kmer_Dataset, Normalizer
+from xron.utils.plot_op import auc_plot
 from torchvision import transforms
 from torch.utils.data.dataloader import DataLoader
 from xron.xron_train_base import DeviceDataLoader
@@ -41,20 +44,11 @@ def load_pore_model(pore_model_f):
             pore_model[split_line[0]] = float(split_line[1])
     return pore_model
 
-def AUC(TP,FP):
-    """Calculate Area under curve given the true positive and false positive
-    array
-    """
-    TP = TP[::-1] if TP[0]>TP[-1] else TP
-    FP = FP[::-1] if FP[0]>FP[-1] else FP
-    TP = [0] + TP if TP[0] != 0 else TP
-    TP = TP + [1] if TP[-1] != 1 else TP
-    FP = [0] + FP if FP[0] != 0 else FP
-    FP = FP + [1] if FP[-1] != 1 else FP
-    FP = np.asarray(FP)
-    TP = np.asarray(TP)
-    return np.sum((TP[1:] + TP[:-1])*(FP[1:]-FP[:-1])/2)
-    
+def multiple_testing(TP,FP,n = 100):
+    TP_n = [1-binom.cdf(int(n/2),n,x) for x in TP]
+    FP_n = [1-binom.cdf(int(n/2),n,x) for x in FP]
+    return TP_n,FP_n
+
 def posterior_decode(posterior,
                      idx2kmer,
                      kmer2idx,
@@ -129,10 +123,10 @@ def run_test(args):
     kmer2idx = config['kmer2idx_dict']
     signal_collection = [[] for _ in np.arange(emission.N)]
     m6a_count = [0,0]
-    thresholds = np.asarray(np.arange(-3000,3000,15)).astype(np.float)
+    thresholds = np.asarray(np.arange(-300,300,1)).astype(np.float)
     rocs = {x:[] for x in thresholds}
     mse,mse_renorm,m6a_ratios = [],[],[]
-    kmers = np.load(os.path.join(args.input,"kmers.npy"),mmap_mode = "r")
+    kmers = np.load(os.path.join(args.input,"kmers.npy"))
     aligner = Methylation_DP_Aligner(base_alternation = {'M':'A'})
     k2t = Kmer2Transition(alphabeta = config['alphabeta'],
                           k = config['k'],
@@ -141,7 +135,7 @@ def run_test(args):
                           idx2kmer = config['idx2kmer'],
                           neighbour_kmer = args.neighbour ,
                           base_alternation = {"M":"A"}, 
-                          base_prior = {"M":args.m_prior},
+                          base_prior = {x:args.m_prior for x in config['alphabeta']},
                           kmer_replacement = True)
     dataset = Kmer_Dataset(chunks, durations, kmers,transform=transforms.Compose([k2t]))
     loader = DataLoader(dataset,batch_size = args.batch_size, shuffle = False)
@@ -154,7 +148,7 @@ def run_test(args):
         transition_batch = batch['labels']
         kmers_batch = batch['kmers']
         renorm_batch = signal_batch
-        for j in tqdm(np.arange(args.renorm+1),desc = "Renorm the signal:"):
+        for j in tqdm(np.arange(args.n_renorm+1),desc = "Renorm the signal:"):
             with torch.no_grad():
                 path,logit = hmm.viterbi_decode(renorm_batch, duration_batch, transition_batch)
             disagreement = torch.sum(path != kmers_batch,axis = 1)/duration_batch
@@ -359,8 +353,26 @@ class Tester(object):
                 collection["m_prop_aln"].append(final_seq.count('M')/(final_seq.count('M')+final_seq.count('A')))
         return collection
     
-    def auc_test(self):
-        raise NotImplementedError()
+    def auc_test(self,
+                 n_batch = 1,
+                 thresholds = []):
+        if self.loader is None:
+            raise ValueError("No dataset has been loaded, call Tester.load_dataset first.")
+        collection = {"TP":[],"FP":[]}
+        for i_batch, batch in tqdm(enumerate(self.loader)):
+            if i_batch >= n_batch:
+                break
+            signal_batch = batch['signal']
+            duration_batch = batch['duration']
+            transition_batch = batch['labels']
+            kmers_batch = batch['kmers']
+            renorm_batch,rc_signal,rc_signal_kmer = self.renormalization(batch)
+            rocs = {x:[] for x in thresholds}
+            with torch.no_grad():
+                gamma = self.hmm.expectation(renorm_batch.float(), duration_batch, transition_batch)
+            for t in tqdm(thresholds):
+                rocs[t]+= posterior_decode(gamma,self.data_config['idx2kmer'],self.data_config['kmer2idx_dict'],t)
+        return rocs
     
 if __name__ == "__main__":
     import seaborn as sns
@@ -376,6 +388,11 @@ if __name__ == "__main__":
         dwell_norm = True
         no_scale = True
         n_renorm = 3
+        
+        ## arguments for old function
+        visual = False
+        n_cases = 1
+        
     model_config = ModelArguments
     
     ### Models
@@ -383,9 +400,10 @@ if __name__ == "__main__":
     #          '/home/heavens/bridge_scratch/NRHMM_models/xron_rhmm_models_new/ckpt-31613',
     #          '/home/heavens/bridge_scratch/NRHMM_models/xron_rhmm_models_new/ckpt-12855']
     ckpts = ['/home/heavens/bridge_scratch/NRHMM_models/rhmm_mm_norm/ckpt-8609']
-    # compare = {"m6A":home_f + "/bridge_scratch/ime4_Yearst/IVT/m6A/rep1/kmers_guppy_4000_noise",
-    #             "control":home_f + "/bridge_scratch/NA12878_RNA_IVT/xron_output/kmers_xron_4000_noise/"}
-    compare = {"m6A":home_f + "/bridge_scratch/m6A_Nanopore_RNA002/data/m6A_25_pct/20210430_1751_X1_FAQ16555_e98b69f8/kmers_guppy_4000_noise"}
+    compare = {"m6A":home_f + "/bridge_scratch/ime4_Yearst/IVT/m6A/rep2/kmers_guppy_4000_noise",
+                "control":home_f + "/bridge_scratch/NA12878_RNA_IVT/xron_output/kmers_xron_4000_noise/"}
+    
+    # compare = {"m6A":home_f + "/bridge_scratch/m6A_Nanopore_RNA002/data/m6A_25_pct/20210430_1751_X1_FAQ16555_e98b69f8/kmers_guppy_4000_noise"}
     # compare = [home_f + "/bridge_scratch/ime4_Yearst/IVT/m6A/rep1/kmers_guppy_4000_dwell",
     #             "/home/heavens/bridge_scratch/NA12878_RNA_IVT/xron_partial/extracted_kmers"]
     # compare = [home_f + "/bridge_scratch/NA12878_RNA_IVT/guppy_train/kmers_guppy_4000_dwell"]
@@ -399,40 +417,32 @@ if __name__ == "__main__":
         testers.append(Tester(model_config))
     
     # testers[0].add_dataset(compare["m6A"],name="P25")
-    testers[0].add_dataset("/home/heavens/bridge_scratch/m6A_Nanopore_RNA002/data/m6A_25_pct/20210430_1751_X1_FAQ16555_e98b69f8/extracted_guppy_4000_mappy",name = "P25")
+    print("Adding datasets.")
+    testers[0].add_dataset("/home/heavens/bridge_scratch/m6A_Nanopore_RNA002/data/m6A_25_pct/20210430_1751_X1_FAQ16555_e98b69f8/kmers_guppy_4000_noise",name = "P25")
     testers[0].add_dataset(home_f + "/bridge_scratch/NA12878_RNA_IVT/xron_output/kmers_xron_4000_noise/",name = "control")
-    testers[0].add_dataset(home_f + "/bridge_scratch/ime4_Yearst/IVT/m6A/rep1/kmers_guppy_4000_noise",name = "m6Arep1")
-    testers[0].load_dataset("P25")
-    # summary = testers[0].renormalization_test(n = 1,plot = True)
-    summary = testers[0].proportion_test(n_batch = 10)
+    testers[0].add_dataset(home_f + "/bridge_scratch/ime4_Yearst/IVT/m6A/rep2/kmers_guppy_4000_noise",name = "m6Arep1")
+    
+    print("Datasets added successfully, loading the control dataset.")
+    testers[0].load_dataset("control")
+    
+    print("Calculate ROC on control dataset.")
+    roc_control = testers[0].auc_test(n_batch = 2, thresholds = np.arange(-100,100,0.5))
+    
+    print("Loading m6A dataset.")
     testers[0].load_dataset("m6Arep1")
-    summary_m6A = testers[0].proportion_test(n_batch = 10)
-    # for m_i,ckpt in enumerate(ckpts):
-    #     model_config.ckpt_f = ckpt
-    #     print("Test model %s"%(ckpt))
-    #     for key,i in compare.items():
-    #         model_config.input = i
-    #         model_config.meth = True if key == "m6A" else False
-    #         print(i)
-    #         m6a_ratio,rocs = run_test(model_config)
-    #         if model_config.meth:
-    #             roc_meth = rocs
-    #         else:
-    #             roc_control = rocs
-    #     TP = [np.mean(x) for x in roc_meth.values()]
-    #     FP = [np.mean(x) for x in roc_control.values()]
-    #     # TP1 = [1-np.mean(x) for x in roc_meth1.values()]
-    #     # FP1 = [1-np.mean(x) for x in roc_control1.values()]
-    #     fig,axs = plt.subplots(figsize = (5,5))
-    #     axs.plot([0]+FP+[1],[0]+TP+[1])
-    #     # axs.plot([1] + FP1 + [0], [1] + TP1 + [0])
-    #     axs.plot([0,1],[0,1],color = "grey")
-    #     print("AUC = %.2f"%(AUC(TP,FP)))
-    #     axs.set_xlabel("False Positive")
-    #     axs.set_ylabel("True Positive")
-    #     axs.text(x = 0.8,y = 0,s = "AUC = %.2f"%(AUC(TP,FP)))
-    # plt.plot([0]+tpfp[1]+[1],[0]+tpfp[0]+[1])
-    # # plt.plot([0,1],[0,1])
-    # plt.title("AUC curve of IVT dataset.")
-    # plt.xlabel("False positive rate")
-    # plt.ylabel("True positive rate")
+    
+    print("Calculate ROC on m6A dataset.")
+    roc_meth = testers[0].auc_test(n_batch = 2, thresholds = np.arange(-100,100,0.5))
+    
+    # summary = testers[0].renormalization_test(n = 1,plot = True)
+    # summary = testers[0].proportion_test(n_batch = 10)
+    testers[0].load_dataset("m6Arep1")
+    # summary_m6A = testers[0].proportion_test(n_batch = 10)
+    TP = [np.mean(x) for x in roc_meth.values()]
+    FP = [np.mean(x) for x in roc_control.values()]
+    fig,axs = plt.subplots(figsize = (5,5))
+    auc_plot(TP,FP,axs)
+    fig,axs = plt.subplots(figsize = (5,5))
+    TP_n,FP_n = multiple_testing(TP, FP, 10)
+    auc_plot(TP_n,FP_n,axs)
+    

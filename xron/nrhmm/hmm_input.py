@@ -386,7 +386,7 @@ class Kmer2Transition(object):
         condensed_transitions = self._get_transition_pairs(condensed_kmer_seqs)
         for i,(kmer,period) in enumerate(condensation):
             curr = flatten(condensed_transitions[max(0,i-self.neighbour):i+self.neighbour+1])
-            transition = self.compact_transition_tensor(curr, [1.0]*len(curr))
+            transition = self.compact_transition_tensor(curr, [self.bg[s,t] for s,t in curr])
             transitions += [transition]*period
         return transitions
     

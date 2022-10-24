@@ -8,8 +8,13 @@ import os
 import h5py
 import itertools
 import numpy as np
+from tqdm import tqdm
 from typing import List
+import contextlib
 from scipy.signal import find_peaks
+
+def arr2seq(arr:ndarray, base_dict):
+    return ''.join([base_dict[x] for x in arr])
 
 def raw2seq(raw:ndarray, blank_symbol:int = 0)->List[ndarray]:
     """
@@ -92,40 +97,86 @@ def fast5_iter_old(fast5_dir,mode = 'r'):
             if type(read_id) != type('a'):
                 read_id = read_id.decode("utf-8")
             yield read_h,signal,root,read_id
-            
-def fast5_iter(fast5_dir,mode = 'r'):
-    for (dirpath, dirnames, filenames) in os.walk(fast5_dir+'/'):
-        for filename in filenames:
-            if not filename.endswith('fast5'):
-                continue
-            abs_path = os.path.join(dirpath,filename)
-            try:
-                root = h5py.File(abs_path,mode = mode)
-            except Exception as e:
-                print("Reading %s failed due to %s."%(abs_path,e))
-                continue
-            if 'Raw' in root:
-                read_h = list(root['/Raw/Reads'].values())[0]
-                if 'Signal_Old' in read_h:
-                    signal = np.asarray(read_h[('Signal_Old')],dtype = np.float32)
-                else:
-                    signal = np.asarray(read_h[('Signal')],dtype = np.float32)
-                read_id = read_h.attrs['read_id']
-                if type(read_id) != type('a'):
-                    read_id = read_id.decode("utf-8")
-                yield root,signal,abs_path,read_id
-            else:
-                for read_id in root:
-                    try:
-                        read_h = root[read_id]
-                        signal_h = read_h['Raw']
-                        signal = np.asarray(signal_h[('Signal')],dtype = np.float32)
-                        read_id = signal_h.attrs['read_id']
-                        yield read_h,signal,abs_path,read_id.decode("utf-8")
-                    except Exception as e:
-                        print("Reading %s failed due to %s."%(read_id,e))
-                        continue
+           
+class NullContextManager(object):
+    def __init__(self, dummy_resource=None):
+        self.dummy_resource = dummy_resource
+    def __enter__(self):
+        return self.dummy_resource
+    def __exit__(self, *args):
+        pass
 
+def fast5_shallow_iter(fast5_dir,mode = 'r',tqdm_bar = False):
+    fail_count = 0
+    with tqdm() if tqdm_bar else NullContextManager() as t:
+        for (dirpath, dirnames, filenames) in os.walk(fast5_dir+'/'):
+            for filename in filenames:
+                if not filename.endswith('fast5'):
+                    continue
+                abs_path = os.path.join(dirpath,filename)
+                try:
+                    root = h5py.File(abs_path,mode = mode)
+                    if tqdm_bar:
+                        t.postfix = "File: %s, failed: %d"%(abs_path,fail_count)
+                        t.update()
+                    yield root,abs_path
+                    root.close()
+                except Exception as e:
+                    print("Reading %s failed due to %s."%(abs_path,e))
+                    fail_count += 1
+                    continue
+
+def fast5_iter(fast5_dir,mode = 'r',tqdm_bar = False):
+    fail_count = 0
+    read_id = ""
+    with tqdm() if tqdm_bar else NullContextManager() as t:
+        for (dirpath, dirnames, filenames) in os.walk(fast5_dir+'/'):
+            for filename in filenames:
+                if not filename.endswith('fast5'):
+                    continue
+                abs_path = os.path.join(dirpath,filename)
+                try:
+                    root = h5py.File(abs_path,mode = mode)
+                except Exception as e:
+                    print("Reading %s failed due to %s."%(abs_path,e))
+                    fail_count += 1
+                    if tqdm_bar:
+                        t.postfix = "File: %s, Read: %s, failed: %d"%(abs_path,read_id,fail_count)
+                        t.update()
+                    continue
+                if 'Raw' in root:
+                    read_h = list(root['/Raw/Reads'].values())[0]
+                    if 'Signal_Old' in read_h:
+                        signal = np.asarray(read_h[('Signal_Old')],dtype = np.float32)
+                    else:
+                        signal = np.asarray(read_h[('Signal')],dtype = np.float32)
+                    read_id = read_h.attrs['read_id']
+                    if type(read_id) != type('a'):
+                        read_id = read_id.decode("utf-8")
+                    if tqdm_bar:
+                        t.postfix = "File: %s, Read: %s, failed: %d"%(abs_path,read_id,fail_count)
+                        t.update()
+                    yield root,signal,abs_path,read_id
+                else:
+                    for read_id in root:
+                        try:
+                            read_h = root[read_id]
+                            signal_h = read_h['Raw']
+                            signal = np.asarray(signal_h[('Signal')],dtype = np.float32)
+                            read_id = signal_h.attrs['read_id']
+                            if tqdm_bar:
+                                t.postfix = "File: %s, Read: %s, failed: %d"%(abs_path,read_id,fail_count)
+                                t.update()
+                            yield read_h,signal,abs_path,read_id.decode("utf-8")
+                        except Exception as e:
+                            print("Reading %s failed due to %s."%(read_id,e))
+                            fail_count += 1
+                            if tqdm_bar:
+                                t.postfix = "File: %s, Read: %s, failed: %d"%(abs_path,read_id,fail_count)
+                                t.update()
+                            continue
+                root.close()
+            
 def med_mad(x, factor=1.4826):
     """
     Calculate signal median and median absolute deviation
@@ -189,6 +240,10 @@ def dwell_normalization(signal:np.array, kmer_seqs:np.array)-> np.array:
     dwell_mean = [np.mean(dwell) for dwell in grouped if len(dwell)>1]
     dwell_var = [np.var(dwell) for dwell in grouped if len(dwell)>1]
     return (signal - np.mean(dwell_mean))/np.sqrt(np.mean(dwell_var))
+
+def med_normalization(signal:np.array) -> np.array:
+    med, mad = med_mad(signal)
+    return (signal - med) / mad
 
 def length_mask(length:np.array, max_length:int):
     b = length.shape[0]

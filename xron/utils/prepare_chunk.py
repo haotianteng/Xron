@@ -160,7 +160,7 @@ def extract(args):
                                    args.stride)
                 basecall_entry = args.basecall_entry
             except KeyError:
-                if args.alternative_entry:
+                if args.alternative_entry is not None:
                     try:
                         seq, pos = retrive_seq(read_h['Analyses/Basecall_1D_%s'%(args.alternative_entry)],
                                            args.stride)
@@ -177,13 +177,9 @@ def extract(args):
             if args.write_correction:
                 if not "Segmentation_%s"%(basecall_entry) in read_h['Analyses']:
                     read_h['Analyses/'].create_group("Segmentation_%s"%(basecall_entry))
+                if not "Reference_corrected" in read_h['Analyses/Segmentation_%s/'%(basecall_entry)]:
                     read_h['Analyses/Segmentation_%s/'%(basecall_entry)].create_group("Reference_corrected")
                 else:
-                    try:
-                        read_h['Analyses/Segmentation_%s/Reference_corrected'%(basecall_entry)]
-                    except KeyError:
-                        fail_read_count["No basecall"] += 1
-                        continue
                     del read_h['Analyses/Segmentation_%s/Reference_corrected'%(basecall_entry)]
                     read_h['Analyses/Segmentation_%s/'%(basecall_entry)].create_group("Reference_corrected")
             if len(seq) < MIN_READ_SEQ_LEN:
@@ -288,6 +284,8 @@ def extract(args):
             break
     for key,val in fail_read_count.items():
         print(key,':',val)
+    if len(chunks) == 0:
+        raise ValueError("No chunk is added to dataset, check the setting.")
     chunks = np.stack(chunks,axis = 0)
     print("Average median value %f"%(np.mean(meds)))
     print("Average median absolute deviation %f"%(np.mean(mads)))
@@ -349,6 +347,7 @@ if __name__ == "__main__":
                             example 000 means looking for Basecall_1D_000.")
     parser.add_argument('--alternative_entry',
                         default = None,
+                        type = str,
                         help="If basecall information is not found in the basecall entry, look into this alternative entry.")
     parser.add_argument('--stride',
                         default = 10,

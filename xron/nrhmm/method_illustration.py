@@ -22,7 +22,7 @@ def kmers2seq(kmers,idx2kmer):
     return ''.join(seqs)
 
 torch.manual_seed(1992)
-model = torch.load("/home/heavens/bridge_scratch/xron_rhmm_models_new/ckpt-12855")
+model = torch.load("/home/heavens/bridge_scratch/NRHMM_models/xron_rhmm_models_new/ckpt-36234")
 emission = GaussianEmissions(model['hmm']['emission.means'].cpu().numpy(), 1*np.ones(3125)[:,None])
 class TestArguments:
     input = "/home/heavens/bridge_scratch/NA12878_RNA_IVT/xron_partial/extracted_kmers/"
@@ -38,13 +38,15 @@ n_samples, sig_len = chunks.shape
 durations = np.load(os.path.join(args.input,"durations.npy"))
 idx2kmer = config['idx2kmer']
 kmers = np.load(os.path.join(args.input,"kmers.npy"))
+base_prior = {x:1 for x in config['alphabeta']}
 k2t = Kmer2Transition(alphabeta = config['alphabeta'],
                       k = config['k'],
                       T_max = config['chunk_len'],
                       kmer2idx = config['kmer2idx_dict'],
                       idx2kmer = config['idx2kmer'],
                       neighbour_kmer = 2,
-                      base_alternation = {"A":"M"}, 
+                      base_alternation = {"A":"M"},
+                      base_prior = base_prior,
                       kmer_replacement = True)
 dataset = Kmer_Dataset(chunks, durations, kmers,transform=transforms.Compose([k2t]))
 loader = DataLoader(dataset,batch_size = args.batch_size, shuffle = True)

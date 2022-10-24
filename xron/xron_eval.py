@@ -11,12 +11,10 @@ import shutil
 import inspect
 import argparse
 import numpy as np
-from tqdm import tqdm
 from typing import Callable
 from datetime import datetime
 from itertools import groupby 
 from functools import partial
-from collections import defaultdict
 from fast_ctc_decode import beam_search
 from boostnano.boostnano_model import CSM
 from boostnano.boostnano_eval import evaluator
@@ -43,11 +41,11 @@ def load(model_folder,net,device = 'cuda'):
     net.to(device)
 
 def chunk_feeder(fast5_f,config,boostnano_evaluator = None):
-    iterator = fast5_iter(fast5_f)
+    iterator = fast5_iter(fast5_f,tqdm_bar = True)
     e = config.EVAL
     batch_size,chunk_len,device,offset = e['batch_size'],e['chunk_len'],e['device'],e['offset']
     chunks,meta_info = [],[]
-    for read_h,signal,fast5_f,read_id in tqdm(iterator):
+    for read_h,signal,fast5_f,read_id in iterator:
         read_len = len(signal)
         if e['mode'] == 'rna' or e['mode'] == 'rna-meth':
             if boostnano_evaluator is None:
@@ -211,30 +209,42 @@ class Writer(object):
                 f.write(">%s\n%s\n"%(name,seq))
     
     def write_fast5(self,output_f):
+        last_dest = None
+        root = None
         for seq,name,fast5,q,move,hidden,logits in zip(self.css_seqs,self.read_ids,self.fast5_fs,self.qs,self.moves,self.hiddens,self.logits):
             dest = os.path.join(output_f,os.path.basename(fast5))
             if not os.path.isfile(dest):
                 shutil.copy(fast5,dest)
-            with h5py.File(dest,mode='a') as root:
-                if 'read_%s/Analyses'%(name) in root:
-                    read_h = root['read_%s/Analyses'%(name)]
-                    existed_basecall = [x for x in list(read_h.keys()) if 'Basecall' in x]
-                else:
-                    existed_basecall = []
-                    root['read_%s'%(name)].create_group('Analyses')
-                    read_h = root['read_%s/Analyses'%(name)]
-                curr_group = read_h.create_group('Basecall_1D_%03d'%(len(existed_basecall)))
-                curr_group.attrs.create('name','Xron')
-                curr_group.attrs.create('time_stamp','%s'%(datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")))
-                result_h = curr_group.create_group('BaseCalled_template')
-                result_h.create_dataset("Fastq",data = "@%s\n%s\n+\n%s\n"%(name,seq,q))
-                result_h.create_dataset("Move",data = move,dtype='i8')
-                result_h.create_dataset("Hidden",data = hidden, dtype = "f")
-                result_h.create_dataset("Logits",data = logits, dtype = "f")
-                summary_h = curr_group.create_group("Summary")
-                summary_h = summary_h.create_group("basecall_1d_template")
-                summary_h.attrs.create('block_stride',self.stride)
-                summary_h.attrs.create('chunk_length',self.chunk_length)
+            if dest != last_dest:
+                if root:
+                    root.close()
+                root = h5py.File(dest,mode='a')
+            if 'read_%s'%(name) not in root:
+                print("Warning read %s is not found in the fast5 %s"%(name,dest))
+                print("An new entry will be created but original sequencing information will be lost.")
+                root.create_group("read_%s"%(name))
+            if 'read_%s/Analyses'%(name) in root:
+                read_h = root['read_%s/Analyses'%(name)]
+                existed_basecall = [x for x in list(read_h.keys()) if 'Basecall' in x]
+            else:
+                existed_basecall = []
+                root['read_%s'%(name)].create_group('Analyses')
+                read_h = root['read_%s/Analyses'%(name)]
+            curr_group = read_h.create_group('Basecall_1D_%03d'%(len(existed_basecall)))
+            curr_group.attrs.create('name','Xron')
+            curr_group.attrs.create('time_stamp','%s'%(datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")))
+            result_h = curr_group.create_group('BaseCalled_template')
+            result_h.create_dataset("Fastq",data = "@%s\n%s\n+\n%s\n"%(name,seq,q))
+            result_h.create_dataset("Move",data = move,dtype='i8')
+            result_h.create_dataset("Hidden",data = hidden, dtype = "f")
+            result_h.create_dataset("Logits",data = logits, dtype = "f")
+            summary_h = curr_group.create_group("Summary")
+            summary_h = summary_h.create_group("basecall_1d_template")
+            summary_h.attrs.create('block_stride',self.stride)
+            summary_h.attrs.create('chunk_length',self.chunk_length)
+            last_dest = dest
+        if root:
+            root.close()
     
     def write_fastq(self,output_f):
         with open(output_f,mode = 'w+') as f:
@@ -325,7 +335,7 @@ class Evaluator(object):
     @_timeit
     def run_nn(self,batch):
         start = timer()
-        self.curr_logits = self.net(batch).cpu().numpy()
+        self.curr_logits = self.net(batch).cpu().numpy() #TODO send the logits into a queue to enable multi-threading
         self.nn_time += timer() - start
     
     def beam_decode(self,posteriors):
@@ -474,7 +484,7 @@ if __name__ == "__main__":
     parser.add_argument('--boostnano', action="store_true", dest="boostnano",
                         help = "Enable boostnano preprocessing.")
     args = parser.parse_args(sys.argv[1:])
-    MEMORY_PER_BATCH_PER_SIGNAL=13430. #KB
+    MEMORY_PER_BATCH_PER_SIGNAL=15000. #B
     if args.batch_size is None:
         if torch.cuda.is_available():
             t = torch.cuda.get_device_properties(0).total_memory

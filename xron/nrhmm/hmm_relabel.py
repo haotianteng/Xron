@@ -289,7 +289,7 @@ if __name__ == "__main__":
                             account when doing normalization, for example, \
                             A!M means kmers that must have A and must not \
                             have M is taken into account.")
-    parser.add_argument("--transition_prior",type = float, default = 1,
+    parser.add_argument("--transition_prior",type = float, default = 0.3,
                         help = "The prior probability of transition matrix.")
     parser.add_argument("--transition_operation",type = str, default = "sparse")
     args = parser.parse_args(sys.argv[1:])
