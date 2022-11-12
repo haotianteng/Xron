@@ -1,8 +1,6 @@
 mappy==2.17
-torch==1.7.1
 numpy==1.19.5
 ont-fast5-api
 pandas
 fast-ctc-decode
 editdistance==0.5.3
-bwapy==0.1.4
