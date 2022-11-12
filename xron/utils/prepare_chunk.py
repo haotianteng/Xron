@@ -23,6 +23,7 @@ from boostnano.boostnano_eval import evaluator
 import inspect
 import os
 from pathlib import Path
+from xron.nrhmm.prepare_data import Extractor
 
 alt_map = {'ins':'0','M':'A','U':'T'}
 complement = {'A': 'T', 'C': 'G', 'G': 'C', 'T': 'A'} 
@@ -41,6 +42,15 @@ DNA_FILTER_CONFIG = {"min_rate":2,
 def reverse_complement(seq):    
     return str(Seq(seq).reverse_complement())
 
+def chop(arr,chunk_length,padding = True,pad_values = 0):
+    read_len = len(arr)
+    chunks = np.split(arr,np.arange(0,read_len,chunk_length))[1:]
+    length = [len(x) for x in chunks]
+    if padding:
+        last_chunk = chunks[-1]
+        chunks[-1]= np.pad(last_chunk,(0,chunk_length-len(last_chunk)),'constant',constant_values = (pad_values,pad_values))
+    return chunks,length
+
 def clean_repr(seq):
     for k,v in alt_map.items():
         seq = seq.replace(k,v)
@@ -55,7 +65,7 @@ def retrive_seq(seq_h,event_stride):
     pos = np.repeat(np.cumsum(moves)-1,repeats = event_stride).astype(np.int32)
     return seq,pos
     
-def filt(filt_config,chunks,seq,seq_len,meta):
+def filt(filt_config,chunks,seq,seq_len,durations,meta,*args):
     n = chunks.shape[0]
     segment_len = chunks.shape[1]
     print("Origin %d chunks in total."%(chunks.shape[0]))
@@ -95,13 +105,17 @@ def filt(filt_config,chunks,seq,seq_len,meta):
     
     pass_chunks = chunks[mask][mono_mask]
     print("In total %.2f"%(100*len(pass_chunks)/len(chunks)),"% of reads pass the filters.")
-    return pass_chunks,seq[mask][mono_mask],seq_len[mask][mono_mask],list(compress(compress(meta,mask),mono_mask))
+    filtered_args = [arg[mask][mono_mask] for arg in args]
+    if filtered_args:
+        return pass_chunks,seq[mask][mono_mask],seq_len[mask][mono_mask],durations[mask][mono_mask],list(compress(compress(meta,mask),mono_mask)),filtered_args
+    else:
+        return pass_chunks,seq[mask][mono_mask],seq_len[mask][mono_mask],durations[mask][mono_mask],list(compress(compress(meta,mask),mono_mask))
     
-def rna_filt(chunks,seq,seq_len,meta):
-    return partial(filt,RNA_FILTER_CONFIG)(chunks,seq,seq_len,meta)
+def rna_filt(chunks,seq,seq_len,durations,meta,*args):
+    return partial(filt,RNA_FILTER_CONFIG)(chunks,seq,seq_len,durations,meta,*args)
 
-def dna_filt(chunks,seq,seq_len,meta):
-    return partial(filt,DNA_FILTER_CONFIG)(chunks,seq,seq_len,meta)
+def dna_filt(chunks,seq,seq_len,durations,meta,*args):
+    return partial(filt,DNA_FILTER_CONFIG)(chunks,seq,seq_len,durations,meta,*args)
 
 def extract(args):
     if args.mode == 'dna':
@@ -112,6 +126,8 @@ def extract(args):
         m = 'r+'
     else:
         m = 'r'
+    if args.extract_kmer:
+        extractor = Extractor(k=args.kmer_size,alphabeta = args.alphabeta)
     iterator = fast5_iter(args.input_fast5,mode = m)
     if args.diff_sig:
         if args.config['fixed_deviation']:
@@ -129,25 +145,28 @@ def extract(args):
     net = CSM()
     boostnano_evaluator = evaluator(net,model_f)
     print("Begin processing the reads.")
-    meta_info,chunks,seqs,meds,mads,meths,offsets,scales,read_ids = [],[],[],[],[],[],[],[],[]
+    meta_info,chunks,seqs,meds,mads,meths,offsets,scales,read_ids,kmers,durations = [],[],[],[],[],[],[],[],[],[],[]
     if args.mode == "rna" or args.mode == "rna_meth":
         reverse_sig = True
     fail_read_count = {"No basecall":0,
                        "Alignment failed":0,
                        "Read too short":0,
                        "Sequence length is inconsistent with signal length":0,
-                       "Processed":0}
+                       "Kmer extraction failed":0,
+                       "Processed":0,}
     
     ### Debug code
     qss = []
     ###
     loop_obj = tqdm(iterator)
     for read_h,signal,fast5_f,read_id in loop_obj:
-        loop_obj.set_postfix_str("no entry: %d, alignment failed: %d, read too short: %d, inconsistent length: %d, processed:%d"%(fail_read_count['No basecall'],
+        postfix_str = "no entry: %d, alignment failed: %d, read too short: %d, inconsistent length: %d, kmer fail:%d, processed:%d"%(fail_read_count['No basecall'],
                                                                                                                                   fail_read_count['Alignment failed'],
                                                                                                                                   fail_read_count['Read too short'],
                                                                                                                                   fail_read_count['Sequence length is inconsistent with signal length'],
-                                                                                                                                  fail_read_count['Processed']))
+                                                                                                                                  fail_read_count['Kmer extraction failed'],
+                                                                                                                                  fail_read_count['Processed'])
+        loop_obj.set_postfix_str(postfix_str)
         read_len = len(signal)
         original_signal = signal.astype(np.float32)
         signal,med,mad = norm_func(signal)
@@ -194,7 +213,7 @@ def extract(args):
             if not hits:
                 fail_read_count['Alignment failed'] += 1
                 continue
-            if args.mode == 'rna' or args.mode == 'rna-meth':
+            if args.mode == 'rna' or args.mode == 'rna_meth':
                 (decoded,path,locs) = boostnano_evaluator.eval_sig(original_signal,1000)
                 locs = read_len - locs
             assert np.all(np.diff(ref_idx)>=0)
@@ -235,6 +254,12 @@ def extract(args):
                 read_h['Analyses/Segmentation_%s/Reference_corrected'%(basecall_entry)].create_dataset("ref_sig_idx",data = ref_sig_idx)
                 read_h['Analyses/Segmentation_%s/Reference_corrected'%(basecall_entry)].create_dataset("ref_seq",data = ref_seq_aligned)
                 read_h['Analyses/Segmentation_%s/Reference_corrected'%(basecall_entry)].create_dataset("map_score",data = qs_aligned)
+                if args.extract_kmer:
+                    try:
+                        _,kmer_seqs = extractor.kmer_decode(ref_seq_aligned, signal, np.asarray(ref_sig_idx), padded = True)
+                    except ValueError:
+                        fail_read_count["Kmer extraction failed"]+=1
+                        continue
             fail_read_count["Processed"] += 1
             for x in np.arange(0,read_len,args.chunk_len):
                 if args.mode == "rna" or args.mode == "rna_meth":
@@ -272,21 +297,28 @@ def extract(args):
             offsets.append(read_h['UniqueGlobalKey/channel_id'].attrs['offset'])
             scales.append(read_h['UniqueGlobalKey/channel_id'].attrs['range'])
         read_ids.append(read_id)
-        current_chunks = np.split(signal,np.arange(0,read_len,args.chunk_len))[1:]
-        last_chunk = current_chunks[-1]
-        current_chunks[-1]= np.pad(last_chunk,(0,args.chunk_len-len(last_chunk)),'constant',constant_values = (0,0))
-        chunks += current_chunks
-        meta_info += [(fast5_f,read_id,str(args.chunk_len),str(args.stride))]*len(current_chunks)
+        curr_chunks,curr_duration = chop(signal,args.chunk_len,pad_values = 0)
+        if args.extract_kmer:
+            curr_kmers,_ = chop(kmer_seqs,args.chunk_len,pad_values = -1)
+            kmers += curr_kmers
+        chunks += curr_chunks
+        durations += curr_duration
+        meta_info += [(fast5_f,read_id,str(args.chunk_len),str(args.stride))]*len(curr_chunks)
         if args.max_n and (args.max_n > 0) and (len(chunks)>args.max_n):
             chunks = chunks[:args.max_n]
             seqs = seqs[:args.max_n]
             meta_info = meta_info[:args.max_n]
+            kmers = kmers[:args.max_n]
+            durations = durations[:args.max_n]
             break
     for key,val in fail_read_count.items():
         print(key,':',val)
     if len(chunks) == 0:
         raise ValueError("No chunk is added to dataset, check the setting.")
     chunks = np.stack(chunks,axis = 0)
+    durations = np.asarray(durations,dtype = np.int)
+    if args.extract_kmer:
+        kmers = np.stack(kmers,axis = 0)
     print("Average median value %f"%(np.mean(meds)))
     print("Average median absolute deviation %f"%(np.mean(mads)))
     print("Average methylation proportion %f"%(np.nanmean(meths)))
@@ -295,17 +327,30 @@ def extract(args):
         seqs = np.array(seqs)
         seq_lens = np.array(seq_lens)
         filt_func = dna_filt if args.mode == "dna" else rna_filt
-        chunks,seqs,seq_lens,meta_info = filt_func(chunks,seqs,seq_lens,meta_info)
+        if args.extract_kmer:
+            chunks,seqs,seq_lens,durations,meta_info,more = filt_func(chunks,seqs,seq_lens,durations,meta_info,kmers)
+            kmers = more[0]
+        else:
+            chunks,seqs,seq_lens,durations,meta_info = filt_func(chunks,seqs,seq_lens,durations,meta_info)
         np.save(os.path.join(args.output,'seqs.npy'),seqs)
         np.save(os.path.join(args.output,'seq_lens.npy'),seq_lens)
+    if args.extract_kmer:
+        np.save(os.path.join(args.output,'kmers.npy'),kmers)
     np.save(os.path.join(args.output,'mm.npy'),(mads,meds,meths,offsets,scales,read_ids))
     np.savetxt(os.path.join(args.output,'meta.csv'),meta_info,fmt="%s")
     np.save(os.path.join(args.output,'chunks.npy'),chunks)
+    np.save(os.path.join(args.output,'durations.npy'),durations)
     config_file = os.path.join(args.output,'config.toml')
     config_modules = [x for x in args.__dir__() if not x .startswith('_')][::-1]
     config_dict = {x:getattr(args,x) for x in config_modules}
     config_dict['FILTER_CONFIG'] = FILTER_CONFIG
     config_dict['minimum_sequence_length']:MIN_READ_SEQ_LEN
+    config_dict["chunk_len"] = args.chunk_len
+    if args.extract_kmer:
+        config_dict["k"] = args.kmer_size
+        config_dict["alphabeta"] = args.alphabeta
+        config_dict['kmer2idx_dict'] = extractor.kmer2idx_dict
+        config_dict['idx2kmer'] = extractor.idx2kmer
     plt.figure()
     sns.distplot(qss)
     plt.xlabel("Quality score")
@@ -337,6 +382,13 @@ if __name__ == "__main__":
                         action = "store_true",  
                         help = "If the sequence information is going to be\
                             extracted.")
+    parser.add_argument("--extract_kmer",
+                        action = "store_true",
+                        help = "If the kmer information is going to be extracted.")
+    parser.add_argument("--kmer_size","-k",
+                        default = None,
+                        type = int,
+                        help = "The length of the kmer to be extracted.")
     parser.add_argument("--write_correction",
                         action = "store_true",
                         dest = "write_correction",
@@ -405,6 +457,14 @@ if __name__ == "__main__":
     else:
         FLAGS.rev_move = FLAGS.move_direction
     FLAGS.config = config
+    FLAGS.alphabeta = "ACGTM" if FLAGS.mode == "rna_meth" else "ACGT"
+    assert FLAGS.mode in ["rna","dna","rna_meth"], "Mode can only be one of rna, dna, rna_meth"
+    if FLAGS.extract_kmer:
+        assert FLAGS.kmer_size is not None, "Please specify the kmer length when extract kmer is enable."
+        assert FLAGS.write_correction, "Please enable write_correction when extract kmer is enable."
+    if FLAGS.write_correction:
+        assert FLAGS.reference is not None, "Please specify the reference genome when write_correction is enable."
+        assert FLAGS.extract_seq, "Please enable extract_seq when write_correction is enable."
     if FLAGS.extract_seq:
         if not FLAGS.reference:
             raise ValueError("Reference genome is required when extract the \

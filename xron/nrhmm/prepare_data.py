@@ -11,7 +11,7 @@ import itertools
 import numpy as np
 from tqdm import tqdm
 from typing import List, Union
-from xron.utils.seq_op import fast5_iter,med_normalization,dwell_normalization,combine_normalization
+from xron.utils.seq_op import fast5_iter,med_normalization,dwell_normalization,combine_normalization,norm_by_noisiest_section
 
 class Extractor(object):
     def __init__(self,k,alphabeta):
@@ -24,7 +24,8 @@ class Extractor(object):
     def kmer_decode(self,
                     sequence:str,
                     signal:np.array,
-                    seq_pos:np.array) -> List[str]:
+                    seq_pos:np.array,
+                    padded:bool = False) -> List[str]:
         """
         Generate a kmer sequence given the sequence and the relavant sequence
         position.
@@ -38,6 +39,7 @@ class Extractor(object):
         seq_pos : np.array
             A array with same length of the sequence, ith element P_i means the
             ith base in sequence is at P_i location in the signal.
+        padded : bool, default is False, if we want to pad the kmer sequence.
 
         Returns
         -------
@@ -51,12 +53,14 @@ class Extractor(object):
         seq_duration = seq_pos[1:] - seq_pos[:-1]
         seq_duration = seq_duration[(self.k-1)//2:len(sequence) - self.k//2]
         seq_duration = self._smooth_zero(seq_duration)
-        segmented_signal = signal[kmer_range[0]:kmer_range[-1]]
+        segmented_signal = signal[kmer_range[0]:kmer_range[-1]] if not padded else signal
         for idx in np.arange((self.k-1)//2,len(sequence) - self.k//2):
             start = idx-(self.k-1)//2
             curr_kmer = sequence[start:start+self.k]
             kmer_seq += [self.kmer2idx_dict[curr_kmer]]*seq_duration[idx-(self.k-1)//2]
         kmer_seq = np.asarray(kmer_seq)
+        if padded:
+            kmer_seq = np.pad(kmer_seq,(kmer_range[0],len(segmented_signal)-kmer_range[-1]),'edge')
         assert(len(segmented_signal) == len(kmer_seq))
         return segmented_signal,kmer_seq
     
@@ -151,6 +155,8 @@ def extract(args):
                 continue
         if args.meth:
             ref_seq = ref_seq.replace("A","M")
+        if args.normalization == "noise":
+            signal,_,_ = norm_by_noisiest_section(signal)
         try:
             segmented_signal,kmer_seqs = extractor.kmer_decode(ref_seq, signal[::-1], ref_sig_idx)
         except ValueError:
@@ -161,7 +167,7 @@ def extract(args):
         elif args.normalization == "combine":
             norm_signal = combine_normalization(segmented_signal, kmer_seqs)
         elif args.normalization == "noise":
-            norm_signal = med_normalization(segmented_signal)
+            norm_signal = segmented_signal
         else:
             raise ValueError("Normalization method can only be dwell, combine or noise.")
         curr_chunks,curr_duration = chop(norm_signal,args.chunk_len)
