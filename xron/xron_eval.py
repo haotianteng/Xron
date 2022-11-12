@@ -6,6 +6,7 @@ Created on Wed Sep 15 08:44:24 2021
 import os
 import sys
 import h5py
+import toml
 import torch
 import shutil
 import inspect
@@ -43,7 +44,7 @@ def load(model_folder,net,device = 'cuda'):
 def chunk_feeder(fast5_f,config,boostnano_evaluator = None):
     iterator = fast5_iter(fast5_f,tqdm_bar = True)
     e = config.EVAL
-    batch_size,chunk_len,device,offset = e['batch_size'],e['chunk_len'],e['device'],e['offset']
+    batch_size,chunk_len,device,offset,overlay = e['batch_size'],e['chunk_len'],e['device'],e['offset'],e['overlay']
     chunks,meta_info = [],[]
     for read_h,signal,fast5_f,read_id in iterator:
         read_len = len(signal)
@@ -61,10 +62,13 @@ def chunk_feeder(fast5_f,config,boostnano_evaluator = None):
                 read_len = len(signal)
         else:
             signal = norm_by_noisiest_section(signal,offset = offset)[0].astype(np.float32)
-        current_chunks = np.split(signal,np.arange(0,read_len,chunk_len))[1:]
+        if read_len <= overlay:
+            current_chunks = [signal]
+        else:
+            current_chunks = [signal[i:i+chunk_len] for i in np.arange(0,read_len-overlay,chunk_len-overlay)]
         last_chunk = current_chunks[-1]
         last_chunk_len = len(last_chunk)
-        current_chunks[-1]= np.pad(last_chunk,(0,args.chunk_len-last_chunk_len),'constant',constant_values = (0,0))
+        current_chunks[-1]= np.pad(last_chunk,(0,chunk_len-last_chunk_len),'constant',constant_values = (0,0))
         chunks += current_chunks
         meta_info += [(fast5_f,read_id,args.chunk_len)]*(len(current_chunks)-1) 
         meta_info += [(fast5_f,read_id,last_chunk_len)]
@@ -121,13 +125,16 @@ def viterbi_decode(logits:torch.tensor):
     sequence = np.argmax(logits,axis = 2)
     sequence = sequence.T #L,N -> N,L
     sequence,moves = raw2seq(sequence)
-    return sequence,list(moves.astype(np.int))
+    return sequence,list(moves.astype(int))
 
 def consensus_call(seqs,assembly_func,metas,moves,qcs,strides,hiddens = None, logits = None):
     if hiddens:
         curr = [x for x in zip(seqs,metas,qcs,moves,hiddens,logits) if x[1][1] == metas[0][1]]
         curr_seqs,curr_meta,qs_list,moves,hiddens,logits = zip(*curr)
         pad_length = len(moves[0]) - curr_meta[-1][2]//strides
+        pad_length_move = len(moves[0]) - np.max([-1] + list(np.where(moves[-1])[0]))-1
+        pad_length = min(pad_length,pad_length_move)
+        # This pad length gurantee that sum(move) = len(seq), as sometime the base can be called in padding region.
         hiddens = np.asarray(hiddens)
         hiddens = hiddens.reshape((-1,hiddens.shape[-1]))[:-pad_length]
         logits = np.asarray(logits)
@@ -157,6 +164,7 @@ class Writer(object):
         self.hiddens = []
         self.logits = []
         self.count = 0
+        self.config = config
         self.base_dict = {i:b for i,b, in enumerate(config.CTC['alphabeta'])}
         self.prefix = write_dest
         self.prefix_fastq = os.path.join(self.prefix,'fastqs')
@@ -251,6 +259,12 @@ class Writer(object):
             for seq,name,q in zip(self.css_seqs,self.read_ids,self.qs):
                 f.write("@%s\n%s\n+\n%s\n"%(name,seq,q))
     
+    def write_config(self,output_f):
+        out_config = {"CTC":self.config.CTC,"EVAL":self.config.EVAL}
+        config_f = os.path.join(output_f,'config.toml')
+        with open(config_f,mode = 'w+') as f:
+            toml.dump(out_config,f)
+
 class Evaluator(object):
     def __init__(self,
                  net:CRNN,
@@ -378,6 +392,8 @@ class Evaluator(object):
     @_timeit
     def call_once(self):
         start = timer()
+        if len(self.seqs) == 0:
+            return
         r = consensus_call(self.seqs,self.assembly_func,self.metas,self.moves,qcs = self.qcs,strides = self.config.CNN['Layers'][-1]['stride'], hiddens = self.hiddens, logits = self.logits)
         self.assembly_time += timer() - start
         start = timer()
@@ -436,8 +452,11 @@ def main(args):
             model_f = os.path.join(project_f,'BoostNano','model')
             boostnano_net = CSM()
             boostnano_evaluator = evaluator(boostnano_net,model_f)
+    overlay_signal = int(args.overlay_ratio * args.chunk_len)
+    config.EVAL['overlay'] = overlay_signal
     df = chunk_feeder(args.input, config, boostnano_evaluator)
     writer = Writer(args.output,config)
+    writer.write_config(args.output)
     assembly_func = partial(simple_assembly_qs,
                             kernal = args.assembly_method,
                             alphabeta = config.CTC["alphabeta"])
@@ -468,6 +487,8 @@ if __name__ == "__main__":
                         help="Evaluation batch size, default use the maximum size of the GPU memory, batch size and memory consume relationship: 200:6.4GB, 400:11GB, 800:20GB, 1200:30GB.")
     parser.add_argument('--chunk_len', default = 2000, type = int,
                         help="The length of each chunk signal.")
+    parser.add_argument('--overlay_ratio', default = 0.0, type = float,
+                        help="The ratio of the overlay between two chunks.")
     parser.add_argument('--config', default = None,
                         help = "Training configuration.")
     parser.add_argument('--threads', type = int, default = None,
