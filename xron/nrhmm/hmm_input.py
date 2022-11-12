@@ -28,7 +28,7 @@ class Kmer_Dataset(data.Dataset):
                  transform:torchvision.transforms.transforms.Compose=None):
         
         self.chunks = chunks
-        self.duration = durations
+        self.duration = durations.astype(np.int64)
         self.labels = kmer_labels
         self.transform = transform
         self.y = labels
