@@ -36,7 +36,7 @@ def int8_encode(x):
     assert np.all(0 <= x) and np.all(x<= 1)
     return (x*256).astype(np.uint8)
 
-class SamWriter(object):
+class SamParser(object):
     def __init__(self,sam_file,fastq_index,modified,format='merge'):
         self.sam_file = sam_file
         self.fastq_index = fastq_index
@@ -217,7 +217,7 @@ def main(args):
         format = "merge"
     else:
         format = "flatten"
-    sam_writer = SamWriter(args.sam,args.fastq,args.modified,format = format)
+    sam_writer = SamParser(args.sam,args.fastq,args.modified,format = format)
     sam_writer.read_sam()
     sam_writer()
 

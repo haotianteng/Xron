@@ -21,7 +21,7 @@ def get_posterior(logits,seq,move,canonical_base = 'A',modified_base = 'M',base_
     for k,g in groupby(zip(logits,pos),lambda x:x[1]):
         g = np.asarray([x[0] for x in g])
         if k >= len(seq):
-            print("Warning, found sequence that is too short.")
+            print("Warning, found sequence that is too short, probabily the result is from a overlay>0 basecall.")
             return None
         if seq[k] == canonical_base or seq[k] == modified_base:
             g = softmax(g)
