@@ -209,10 +209,10 @@ def main(args):
     loader_eval = DeviceDataLoader(loader_eval,device = DEVICE)
     print("Train dataset: %d batches; Evaluation dataset: %d batches"%(len(loader),len(loader_eval)))
     net = CRNN(config)
-    #writer = SummaryWriter()
+    writer = SummaryWriter()
     #sample_signal = dataset[0]['signal'].unsqueeze(0)
     #writer.add_graph(net,sample_signal)
-    writer = None
+    # writer = None
     t = SupervisedTrainer(loader,net,config,eval_dataloader = loader_eval,logger = writer)
     if args.retrain:
         print("Load previous trained model.")
