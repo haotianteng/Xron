@@ -11,6 +11,7 @@ from torchvision import transforms
 import torch.utils.data as data
 from torch.utils.data.dataloader import DataLoader
 from functools import partial
+#from torch.utils.tensorboard import SummaryWriter
 from xron.xron_model import CRNN, CONFIG
 from xron.xron_input import Dataset, ToTensor, NumIndex
 from xron.xron_train_base import Trainer, DeviceDataLoader, load_config
@@ -21,7 +22,8 @@ class SupervisedTrainer(Trainer):
                  net:CRNN,
                  config:CONFIG,
                  device:str = None,
-                 eval_dataloader:DataLoader = None):
+                 eval_dataloader:DataLoader = None,
+                 logger = None):
         """
 
         Parameters
@@ -52,6 +54,7 @@ class SupervisedTrainer(Trainer):
                          eval_dataloader = eval_dataloader)
         self.net = net
         self.grad_norm = config.TRAIN['grad_norm']
+        self.logger = logger
         
     def train(self,epoches,optimizer,save_cycle,valid_cycle,save_folder,scheduler = None):
         self.save_folder = save_folder
@@ -73,12 +76,17 @@ class SupervisedTrainer(Trainer):
                 optimizer.step()
                 self.losses.append(loss.item())
                 self.global_step +=1
+                if self.logger is not None:
+                    self.logger.add_scalar('Loss/train', loss.item(), self.global_step)
                 if (i_batch+1)%save_cycle==0:
                     self.save()
                     with torch.set_grad_enabled(False):
                         eval_i,valid_batch = next(enumerate(self.eval_ds))
                         valid_error,valid_perror = self.valid_step(valid_batch)
                         self.errors.append(valid_error)
+                        if self.logger is not None:
+                            self.logger.add_scalar('Error/valid', valid_error, self.global_step)
+                            self.logger.add_scalar('Error/valid_plain', valid_perror, self.global_step)
                         print("Epoch %d: Batch %d, loss %f, error %f valid_error %f, reducting_error %f"%(epoch_i, i_batch, loss,error, np.mean(valid_error),np.mean(valid_perror)))
                     self.save_loss()
                 if (i_batch+1)%valid_cycle==0:
@@ -89,9 +97,13 @@ class SupervisedTrainer(Trainer):
                         print("Epoch %d: Batch %d, loss %f, error %f valid_error %f, reducting_error %f"%(epoch_i, i_batch, loss,error, np.mean(valid_error),np.mean(valid_perror)))
                     if scheduler is not None:
                         scheduler.step(valid_error)
+                    if self.logger is not None:
+                        self.logger.add_scalar('Error/valid', valid_error, self.global_step)
+                        self.logger.add_scalar('Error/valid_plain', valid_perror, self.global_step)
                 
     def valid_step(self,batch):
         net = self.net
+        net.eval()
         signal_batch = batch['signal']
         out = net.forward(signal_batch)
         seq = batch['seq']
@@ -110,6 +122,7 @@ class SupervisedTrainer(Trainer):
                                     beam_size = self.config.CTC['beam_size'],
                                     beam_cut_threshold = self.config.CTC['beam_cut_threshold'],
                                     reduction = {'M':'A'})
+        net.train()
         return error,plain_error
 
     def train_step(self,batch,get_error = False):
@@ -153,7 +166,7 @@ def main(args):
                  "batch_size":args.batch_size,
                  "grad_norm":2,
                  "keep_record":5,
-                 "eval_size":5000,
+                 "eval_size":100,
                  "optimizer":args.optimizer,
                  "embedding_pretrain_model":args.embedding}
     config = TRAIN_CONFIG()
@@ -196,14 +209,20 @@ def main(args):
     loader_eval = DeviceDataLoader(loader_eval,device = DEVICE)
     print("Train dataset: %d batches; Evaluation dataset: %d batches"%(len(loader),len(loader_eval)))
     net = CRNN(config)
-    t = SupervisedTrainer(loader,net,config,eval_dataloader = loader_eval)
+    #writer = SummaryWriter()
+    #sample_signal = dataset[0]['signal'].unsqueeze(0)
+    #writer.add_graph(net,sample_signal)
+    writer = None
+    t = SupervisedTrainer(loader,net,config,eval_dataloader = loader_eval,logger = writer)
     if args.retrain:
         print("Load previous trained model.")
         t.load(model_f)
         if args.retrain_on_last:
             print("Freeze all layers except last %d fully-connected layers"%(args.retrain_on_last))
             assert args.retrain_on_last <= config.FNN['N_Layer'], "Argument retrain_on_last %d is larger than the number of FNN layers %d."%(args.retrain_on_last,config.FNN['N_Layer'])
-            for layer in t.net.net[:-args.retrain_on_last*2]:
+            n_skip = sum([2 if layer['dropout'] is None else 3 for layer in config.FNN['Layers'][:-args.retrain_on_last] ])
+            for layer in t.net.net[:-n_skip]:
+                #multiply by 2 here because we have weight and bias.
                 for param in layer.parameters():
                     param.requires_grad = False
         if args.reinitialize_methylation:
