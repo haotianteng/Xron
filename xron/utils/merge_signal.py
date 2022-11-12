@@ -29,7 +29,7 @@ def main(args):
     
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description='Training model with tfrecord file')
+        description='Merge signal chunks from different folder.')
     parser.add_argument('-i', '--input', default = None,
                         help = "The input signal chunks, separate by comma.")
     parser.add_argument('-o', '--output', required = True,

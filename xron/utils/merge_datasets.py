@@ -27,7 +27,7 @@ def merge(args):
                 continue
             else:
                 print("Collecting %s..."%(key))
-                pieces = np.load(os.path.join(sub_f,key))
+                pieces = np.load(os.path.join(sub_f,key),mmap_mode = "r")
                 print("Collected %d instances"%(len(pieces)))
                 if args.max is not None and len(pieces) > args.max:
                     print("Thresholding it to %d instances"%(args.max))
@@ -53,9 +53,10 @@ if __name__ == "__main__":
                         help = "Data folder contains npy file, separated by comma.")
     parser.add_argument("-o","--output",required = True, type = str,
                         help = "The output folder to store the merged dataset.")
-    parser.add_argument("-k","--key", type = str, default = "chunks,path",
+    parser.add_argument("-k","--key", type = str, default = "chunks,path,seqs,seq_lens,durations",
                         help = "The name of npy items need to be collected, separated by comma.")
     parser.add_argument("-m","--max", type = int, default = None,
                         help = "The maximum number of instances to be include in each dataset.")
     args = parser.parse_args(sys.argv[1:])
+    os.makedirs(args.output,exist_ok = True)
     main(args)
