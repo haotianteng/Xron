@@ -14,13 +14,13 @@ from scipy.stats import binom
 from tqdm import tqdm
 from matplotlib import pyplot as plt
 from xron.nrhmm.hmm import GaussianEmissions, RHMM
-from xron.nrhmm.hmm_relabel import Methylation_DP_Aligner
+from xron.nrhmm.kmer2seq import fixing_looping_path
 from xron.nrhmm.hmm_input import Kmer2Transition, Kmer_Dataset, Normalizer
 from xron.utils.plot_op import auc_plot
 from torchvision import transforms
 from torch.utils.data.dataloader import DataLoader
 from xron.xron_train_base import DeviceDataLoader
-
+from xron.utils.seq_op import Methylation_DP_Aligner
 ### Test module
 from time import time
 
@@ -258,7 +258,7 @@ class Tester(object):
         loader = DataLoader(dataset,batch_size = self.config.batch_size, shuffle = shuffle)
         self.loader = DeviceDataLoader(loader,device = self.config.device)
         return loader
-
+    
     def renormalization(self, 
                         batch,
                         n_renorm = None):
@@ -274,6 +274,13 @@ class Tester(object):
         for j in tqdm(np.arange(n_renorm),desc = "Renorm the signal:"):
             with torch.no_grad():
                 path,logit = self.hmm.viterbi_decode(renorm_batch, duration_batch, transition_batch)
+                for i in np.arange(len(path)):
+                    seq = kmers2seq(kmers_batch[i],idx2kmer = self.data_config['idx2kmer'])
+                    if config.fix_alignment:
+                        p = path[i].cpu().numpy()
+                        d = duration_batch[i].cpu().numpy()
+                        fix_path = fixing_looping_path(p[:d],seq,idx2kmer = self.data_config['idx2kmer'],canonical_base = 'A',modified_base = 'M')
+                        path[i,:duration_batch[i]] = torch.from_numpy(fix_path)
             rc_signal = np.asarray([[self.hmm.emission.means[x].item() for x in p] for p in path.cpu().numpy()])
             rc_signal_kmer = np.asarray([[self.hmm.emission.means[x].item() for x in p] for p in kmers_batch.cpu().numpy()])
             renorm_batch = norm(renorm_batch.cpu().numpy()[:,:,0],rc_signal, duration_batch.cpu().numpy(),path.cpu().numpy())
@@ -305,6 +312,14 @@ class Tester(object):
                 collection['RC_MSE'].append(np.mean(diff ** 2))
                 collection['RC_RENORM_MSE'].append(np.mean(diff_renorm ** 2))
                 if plot:
+                    print("Sequence %d"%(i))
+                    if self.config.fix_alignment:
+                        seq = kmers2seq(kmers_batch[i],idx2kmer = self.data_config['idx2kmer'])
+                        fix_path = fixing_looping_path(path[i,:duration_batch[i]],seq,idx2kmer = self.data_config['idx2kmer'],canonical_base = 'A',modified_base = 'M')
+                        print("pred:%s"%(kmers2seq(fix_path,self.data_config['idx2kmer'])))
+                    else:
+                        print("pred:%s"%(kmers2seq(path[i],self.data_config['idx2kmer'])))
+                    print("orig:%s"%(kmers2seq(kmers_batch[i],self.data_config['idx2kmer'])))
                     fig,axs = plt.subplots()
                     axs.plot(orig_sig,c = 'g',label = "original signal")
                     axs.plot(rescale_sig,c = 'r', label = "Rescaled signal")
@@ -381,13 +396,14 @@ if __name__ == "__main__":
     class ModelArguments:
         batch_size = 10
         device = "cuda" if torch.cuda.is_available() else "cpu"
-        m_prior = 1 #The prior factor of a base being normalized, 1 means no bias.
+        m_prior = 0.3 #The prior factor of a base being normalized, 1 means no bias.
         neighbour = 4
         ckpt_f = None
         ## Renormalization arguments
         dwell_norm = True
         no_scale = True
         n_renorm = 3
+        fix_alignmetn = False
         
         ## arguments for old function
         visual = False
@@ -425,6 +441,9 @@ if __name__ == "__main__":
     print("Datasets added successfully, loading the control dataset.")
     testers[0].load_dataset("control")
     
+    print("Renormalization test.")
+    summary = testers[0].renormalization_test(n_batch = 1,plot = True)
+    
     print("Calculate ROC on control dataset.")
     roc_control = testers[0].auc_test(n_batch = 2, thresholds = np.arange(-100,100,0.5))
     
@@ -434,7 +453,6 @@ if __name__ == "__main__":
     print("Calculate ROC on m6A dataset.")
     roc_meth = testers[0].auc_test(n_batch = 2, thresholds = np.arange(-100,100,0.5))
     
-    # summary = testers[0].renormalization_test(n = 1,plot = True)
     # summary = testers[0].proportion_test(n_batch = 10)
     testers[0].load_dataset("m6Arep1")
     # summary_m6A = testers[0].proportion_test(n_batch = 10)
