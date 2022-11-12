@@ -17,7 +17,10 @@ def split(args):
     fs = os.listdir(args.input)
     for f in fs:
         if f.endswith(".npy"):
-            collections[f] = np.load(os.path.join(args.input,f))
+            try:
+                collections[f] = np.load(os.path.join(args.input,f))
+            except ValueError:
+                continue
     s = np.array([len(x) for x in collections.values()])
     if not(np.all(s==s[0])):
         print("Warning the npy files inside the folder has different size.")
