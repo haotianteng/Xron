@@ -46,8 +46,8 @@ class RNN_CONFIG(CNN_CONFIG):
 
 class FNN_CONFIG(RNN_CONFIG):
     FNN = {'N_Layer':2,
-           'Layers':[{'out_features':EMBEDDING_SIZE,'bias':True,'activation':'Sigmoid'},
-                     {'out_features':N_BASE+1,'bias':True,'activation':'Linear'}]}
+           'Layers':[{'out_features':EMBEDDING_SIZE,'bias':True,'activation':'Sigmoid','dropout':None},
+                     {'out_features':N_BASE+1,'bias':True,'activation':'Linear','dropout':None}]}
 class CONFIG(FNN_CONFIG):
     def __init__(self):
         self.EMBEDDING= {'n_layers':self.CNN['N_Layer']+3}
@@ -69,8 +69,8 @@ class CRITIC_RNN(CRITIC_CNN):
     RNN = {'layer_type':'BidirectionalRNN','hidden_size':64,'cell_type':'LSTM','num_layers':1}
 class CRITIC_FNN(CRITIC_RNN):
     FNN = {'N_Layer':2,
-           'Layers':[{'out_features':32,'bias':True,'activation':'ReLU'},
-                     {'out_features':1,'bias':False,'activation':'Linear'}]}
+           'Layers':[{'out_features':32,'bias':True,'activation':'ReLU','dropout':0.2},
+                     {'out_features':1,'bias':False,'activation':'Linear','dropout':None}]}
 class CRITIC_CONFIG(CRITIC_FNN):
     pass
 
@@ -87,7 +87,7 @@ class DECODER_CONFIG(CONFIG):
                                        {'layer_type':'RevRes1d','kernel_size':5,'stride':1,'out_channels':32}]
                             }
         self.CNN_DECODER['Input_Shape'] = self.EMBEDDING["shape"]
-    FNN_DECODER = {'N_Layer':1,
+    FNN_DECODER = {'N_Layer':2,
                    'Layers':[{'out_features':8,'bias':True,'activation':'ReLU'},
                              {'out_features':1,'bias':True,'activation':'Linear'}]}
         
@@ -143,9 +143,15 @@ class BASE(nn.Module):
         layers = []
         for l in fnn_config['Layers']:
             activation = l.pop('activation')
+            if "dropout" in l:
+                dropout = l.pop('dropout')
+            else:
+                dropout = None
             layers.append(nn.Linear(in_features = in_channels,**l))
             if activation != 'Linear':
                 layers.append(module_dict[activation]())
+            if dropout is not None:
+                layers.append(nn.Dropout(p = dropout))
             in_channels = l['out_features']
         return layers
     
