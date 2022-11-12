@@ -11,6 +11,7 @@ import numpy as np
 from tqdm import tqdm
 from typing import List
 import contextlib
+from typing import Dict
 from scipy.signal import find_peaks
 
 def arr2seq(arr:ndarray, base_dict):
@@ -368,3 +369,139 @@ def diff_norm_fixing_deviation(signal, deviation = 100.0, offset = 0.0):
     diff_signal = (signal[1:] - signal[:-1])/deviation
     med, mad = med_mad(diff_signal)
     return diff_signal + offset, med, mad
+
+class Methylation_DP_Aligner(object):
+    def __init__(self,
+                 pxy:int = 2, 
+                 pgopen: int = 4,
+                 pgap:int = 3,
+                 edge_gap:float = -0.1,
+                 base_alternation:Dict = {}):
+        """
+        A sequence aligner that uses dynamic programming
+
+        Parameters
+        ----------
+        pxy : int, optional
+            The mismatch penalty score, default is 2.
+        pgopen: int optional
+            The penalty score for opening a gap, default is 3.5.
+        pgap : int, optional
+            The gap penalty, default is 3.
+        edge_gap: int, optional
+            The penalty reduce for the gap happened in edge, 
+        base_alternation: dict, optional
+            The dictionary gives the base alternation, default is None.
+        
+        """
+        self.pxy = pxy
+        self.pgopen = pgopen
+        self.pgap = pgap
+        self.edge_gap = edge_gap
+        self.base_alt = base_alternation
+        
+    def _equal_base(self,a,b):
+        if a in self.base_alt.keys():
+            a = self.base_alt[a]
+        if b in self.base_alt.keys():
+            b = self.base_alt[b]
+        return a==b
+    
+    def align(self, x:str, y:str):
+        i,j = 0,0
+        m,n = len(x),len(y)
+         
+        # table for storing optimal substructure answers
+        dp = np.zeros([m+1,n+1], dtype = float) #The score matrix
+        d = np.zeros([m+1,n+1], dtype = int) #The direction matrix
+        
+        # initialising the table
+        dp[:,0] = self.pgap * np.arange(m+1)
+        dp[0,:] = self.pgap * np.arange(n+1) 
+        d[:,0] = 1
+        d[0,:] = 2
+        # calculating the minimum penalty
+        i = 1
+        while i <= m:
+            j = 1
+            while j <= n:
+                curr = [dp[i - 1][j - 1] + (0 if self._equal_base(x[i-1], y[j-1]) else self.pxy),
+                        dp[i - 1][j] + (self.pgap if d[i-1][j] == 1 else self.pgopen)+(self.edge_gap if j == n else 0),
+                        dp[i][j - 1] + (self.pgap if d[i][j-1] == 2 else self.pgopen)+(self.edge_gap if i == m else 0)]
+                d[i][j] = max(np.where(curr == np.min(curr))[0])
+                dp[i][j] = curr[d[i][j]]
+                    
+                j += 1
+            i += 1
+         
+        # Reconstructing the solution
+        l = n + m   # maximum possible length
+        i = m
+        j = n
+        xpos = l
+        ypos = l
+     
+        # Final answers for the respective strings
+        xans = np.zeros(l+1, dtype=int)
+        yans = np.zeros(l+1, dtype=int)
+         
+     
+        while not (i == 0 or j == 0):
+            #print(f"i: {i}, j: {j}")
+            if d[i][j] == 0:       
+                xans[xpos] = ord(x[i - 1])
+                yans[ypos] = ord(y[j - 1])
+                xpos -= 1
+                ypos -= 1
+                i -= 1
+                j -= 1
+             
+            elif d[i][j] == 1:
+                xans[xpos] = ord(x[i - 1])
+                yans[ypos] = ord('_')
+                xpos -= 1
+                ypos -= 1
+                i -= 1
+             
+            elif d[i][j] == 2:
+                xans[xpos] = ord('_')
+                yans[ypos] = ord(y[j - 1])
+                xpos -= 1
+                ypos -= 1
+                j -= 1
+             
+     
+        while xpos > 0:
+            if i > 0:
+                i -= 1
+                xans[xpos] = ord(x[i])
+                xpos -= 1
+            else:
+                xans[xpos] = ord('_')
+                xpos -= 1
+         
+        while ypos > 0:
+            if j > 0:
+                j -= 1
+                yans[ypos] = ord(y[j])
+                ypos -= 1
+            else:
+                yans[ypos] = ord('_')
+                ypos -= 1
+        mask = np.logical_not((xans==yans)*(xans == ord('_')))
+        seq_x = ''.join([chr(x) for x in xans[mask]][1:])
+        seq_y = ''.join([chr(x) for x in yans[mask]][1:])
+        return seq_x,seq_y
+    
+    def merge(self,seq_x,ref_algn):
+        rs_x = seq_x.rstrip('_')
+        ref_algn = ref_algn[:len(rs_x)] #Trim the right side of the reference
+        m_seq = [(x if x!="_" else y) for x,y in zip(seq_x,ref_algn) if y!="_"]
+        return ''.join(m_seq)
+    
+if __name__ == "__main__":
+    aligner = Methylation_DP_Aligner()
+    x = "AAAGAATCA"
+    y = "AAAAGAATTCACA"
+    x_,y_ = aligner.align(x,y)
+    print(aligner.merge(x_,y_))

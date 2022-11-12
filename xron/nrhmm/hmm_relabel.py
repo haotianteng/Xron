@@ -13,6 +13,7 @@ import itertools
 import numpy as np
 from tqdm import tqdm
 from typing import Dict,List
+from xron.utils.seq_op import Methylation_DP_Aligner
 from xron.nrhmm.hmm import GaussianEmissions, RHMM
 from xron.nrhmm.hmm_input import Kmer2Transition, Kmer_Dataset, Normalizer
 from torchvision import transforms
@@ -52,130 +53,6 @@ def load(self,save_folder,update_global_step = True):
             self.nets[key].to(self.device)
         else:
             print("%s net is defined in the checkpoint but is not imported because it's not defined in the model."%(key))
-            
-class Methylation_DP_Aligner(object):
-    def __init__(self,
-                 pxy:int = 2, 
-                 pgap:int = 3,
-                 base_alternation:Dict = {}):
-        """
-        A sequence aligner that uses dynamic programming
-
-        Parameters
-        ----------
-        pxy : int, optional
-            The mismatch penalty score, default is 2.
-        pgap : int, optional
-            The gap penalty, default is 3.
-        base_alternation: dict, optional
-            The dictionary gives the base alternation, default is None.
-        
-        """
-        self.pxy = pxy
-        self.pgap = pgap
-        self.base_alt = base_alternation
-        
-    def _equal_base(self,a,b):
-        if a in self.base_alt.keys():
-            a = self.base_alt[a]
-        if b in self.base_alt.keys():
-            b = self.base_alt[b]
-        return a==b
-    
-    def align(self, x:str, y:str):
-        i,j = 0,0
-        m,n = len(x),len(y)
-         
-        # table for storing optimal substructure answers
-        dp = np.zeros([m+1,n+1], dtype = int) #The score matrix
-        d = np.zeros([m+1,n+1], dtype = int) #The direction matrix
-        
-        # initialising the table
-        dp[:,0] = self.pgap * np.arange(m+1)
-        dp[0,:] = self.pgap * np.arange(n+1) 
-        d[:,0] = 1
-        d[0,:] = 2
-        # calculating the minimum penalty
-        i = 1
-        while i <= m:
-            j = 1
-            while j <= n:
-                if self._equal_base(x[i-1], y[j-1]):
-                    dp[i][j] = dp[i - 1][j - 1]
-                    d[i][j] = 0
-                else:
-                    curr = [dp[i - 1][j - 1] + self.pxy,
-                            dp[i - 1][j] + self.pgap,
-                            dp[i][j - 1] + self.pgap]
-                    d[i][j] = np.argmin(curr)
-                    dp[i][j] = curr[d[i][j]]
-                    
-                j += 1
-            i += 1
-         
-        # Reconstructing the solution
-        l = n + m   # maximum possible length
-        i = m
-        j = n
-         
-        xpos = l
-        ypos = l
-     
-        # Final answers for the respective strings
-        xans = np.zeros(l+1, dtype=int)
-        yans = np.zeros(l+1, dtype=int)
-         
-     
-        while not (i == 0 or j == 0):
-            #print(f"i: {i}, j: {j}")
-            if d[i][j] == 0:       
-                xans[xpos] = ord(x[i - 1])
-                yans[ypos] = ord(y[j - 1])
-                xpos -= 1
-                ypos -= 1
-                i -= 1
-                j -= 1
-             
-            elif d[i][j] == 1:
-                xans[xpos] = ord(x[i - 1])
-                yans[ypos] = ord('_')
-                xpos -= 1
-                ypos -= 1
-                i -= 1
-             
-            elif d[i][j] == 2:
-                xans[xpos] = ord('_')
-                yans[ypos] = ord(y[j - 1])
-                xpos -= 1
-                ypos -= 1
-                j -= 1
-             
-     
-        while xpos > 0:
-            if i > 0:
-                i -= 1
-                xans[xpos] = ord(x[i])
-                xpos -= 1
-            else:
-                xans[xpos] = ord('_')
-                xpos -= 1
-         
-        while ypos > 0:
-            if j > 0:
-                j -= 1
-                yans[ypos] = ord(y[j])
-                ypos -= 1
-            else:
-                yans[ypos] = ord('_')
-                ypos -= 1
-        mask = np.logical_not((xans==yans)*(xans == ord('_')))
-        seq_x = ''.join([chr(x) for x in xans[mask]][1:])
-        seq_y = ''.join([chr(x) for x in yans[mask]][1:])
-        return seq_x,seq_y
-    
-    def merge(self,seq_x,seq_y):
-        m_seq = [x for x,y in zip(seq_x,seq_y) if x!="_" and y!="_"]
-        return ''.join(m_seq)
 
 def main(args):
     print("Loading data...")
@@ -259,8 +136,8 @@ def main(args):
     seq_lens = np.array(seq_lens)
     paths = np.concatenate(paths,axis = 0)
     np.save(os.path.join(args.input,'chunks_renorm.npy'),sigs[:args.max_n])
-    np.save(os.path.join(args.input,'seqs.npy'),seqs[:args.max_n])
-    np.save(os.path.join(args.input,'seq_lens.npy'),seq_lens[:args.max_n])
+    np.save(os.path.join(args.input,'seqs_re.npy'),seqs[:args.max_n])
+    np.save(os.path.join(args.input,'seq_re_lens.npy'),seq_lens[:args.max_n])
     np.save(os.path.join(args.input,'path'),paths[:args.max_n])
 
 if __name__ == "__main__":
