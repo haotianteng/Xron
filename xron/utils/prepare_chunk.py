@@ -29,7 +29,7 @@ alt_map = {'ins':'0','M':'A','U':'T'}
 complement = {'A': 'T', 'C': 'G', 'G': 'C', 'T': 'A'} 
 MIN_READ_SEQ_LEN = 100 #The filter of minimum sequence length.
 RNA_FILTER_CONFIG = {"min_rate":25,
-                     "min_seq_len":3, #this is in term of chunks
+                     "min_seq_len":3, #this is in term of each chunk
                      "max_gap_allow":2000,
                      "min_quality_score":0.85, #the minimum quality score for a chunk to be included into traning set.
                      "max_mono_prop":0.6}
