@@ -43,6 +43,7 @@ class SamParser(object):
         self.tagged = False #To identify if the file has been tagged by xron before.
         self.modified = modified
         self.flag = FLAGS[modified]
+        self.canonical_base = self.flag.split('+')[0]
         self.format = format
     @property
     def PG_header(self):
@@ -156,8 +157,15 @@ class SamParser(object):
                 continue #Skip non-basecall entries
             if fast5_read_handle['Analyses'][entry].attrs['name'] != 'Xron':
                 continue
+            result_h = fast5_read_handle['Analyses'][entry]['BaseCalled_template']
             try:
-                modified_probability = np.asarray(fast5_read_handle['Analyses'][entry]['BaseCalled_template']['ModifiedProbability'])
+                seq = str(np.asarray(result_h['Fastq']).astype(str)).split('\n')[1]
+            except:
+                seq = np.asarray(result_h['Fastq']).tobytes().decode('utf-8').split('\n')[1]
+            try:
+                modified_probability = np.asarray(result_h['ModifiedProbability'])
+                if (len(modified_probability) == 0) and (seq.count(self.canonical_base)):
+                    return None
                 return int8_encode(modified_probability)
             except KeyError:
                 continue
@@ -195,6 +203,7 @@ class SamParser(object):
                         mm,ml = mmtag_func(modified_p)
                         MMs[self.flag] = mm
                         MLs[self.flag] = ml
+                    if len(MMs):
                         MM_string = 'MM:Z:'+';'.join([k+'.,'+v for k,v in MMs.items()])+';'
                         ML_string = 'ML:B:C,'+','.join([v for v in MLs.values()])
                         if 'MM:Z:' in aln:
