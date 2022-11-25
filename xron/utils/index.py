@@ -14,6 +14,7 @@ from xron.utils.fastIO import read_fastq
 def indexing(args):
     fastq_records = read_fastq(args.fastq)
     fast5_records = {}
+    print("Indexing fastq files.")
     with open(args.fastq+'.index', 'w+') as f:
         for root,abs_path in fast5_shallow_iter(args.fast5,tqdm_bar = True):
             read_ids = list(root.keys())
