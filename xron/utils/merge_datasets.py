@@ -13,11 +13,10 @@ import numpy as np
 import argparse
 
 def merge(args):
-    fs = args.input.strip().split(',')
-    keys = args.key.strip().split(',')
+    fs = args.fs
+    keys = args.keys
     collections = {x+'.npy':[] for x in keys}
-    first_round = True
-    for sub_f in fs:
+    for f_i,sub_f in enumerate(fs):
         print("Collecting from %s..."%(sub_f))
         npy_files = [x for x in os.listdir(sub_f) if x.endswith(".npy")]
         for key in collections.keys():
@@ -29,9 +28,9 @@ def merge(args):
                 print("Collecting %s..."%(key))
                 pieces = np.load(os.path.join(sub_f,key),mmap_mode = "r")
                 print("Collected %d instances"%(len(pieces)))
-                if args.max is not None and len(pieces) > args.max:
-                    print("Thresholding it to %d instances"%(args.max))
-                    pieces = pieces[:args.max]
+                if args.max is not None and len(pieces) > args.max[f_i]:
+                    print("Thresholding it to %d instances"%(args.max[f_i]))
+                    pieces = pieces[:args.max[f_i]]
                 collections[key].append(pieces)
     shapes = [sum([len(y) for y in x]) for x in collections.values()]
     assert len(np.unique(shapes)) == 1
@@ -55,8 +54,15 @@ if __name__ == "__main__":
                         help = "The output folder to store the merged dataset.")
     parser.add_argument("-k","--key", type = str, default = "chunks,path,seqs,seq_lens,durations",
                         help = "The name of npy items need to be collected, separated by comma.")
-    parser.add_argument("-m","--max", type = int, default = None,
-                        help = "The maximum number of instances to be include in each dataset.")
+    parser.add_argument("-m","--max", default = None,
+                        help = "The maximum number of instances to be include in each dataset, can be a list of int separated by commas specify maximum number for each datasets.")
     args = parser.parse_args(sys.argv[1:])
     os.makedirs(args.output,exist_ok = True)
+    args.fs = args.input.strip().split(',')
+    args.keys = args.key.strip().split(',')
+    if ',' in args.max:
+        args.max = [int(x) for x in args.max.split(',')]
+    else:
+        args.max = [int(args.max)] * len(args.fs)
+    assert len(args.fs) == len(args.max)
     main(args)
