@@ -269,18 +269,20 @@ def fixing_looping_path(path,seq,idx2kmer:List,modified_base,canonical_base):
     """
     kmer_n = len(idx2kmer[0])
     decoded,duration = kmers2seq(path,idx2kmer,return_pos = True)
+    if decoded == seq:
+        return path,False
     duration += [0]*(kmer_n-1)
     aligner = Methylation_DP_Aligner(base_alternation = {modified_base:canonical_base})
     x,y = aligner.align(decoded, seq)
-    if not "_" in x and not "_" in y:
-        return path
     aln = LinkingAlignment(x,duration,y)
     aln.insertion_traverse_fix()
     aln.deletion_traverse_fix()
     aln.mismatch_traverse_fix()
     fix_seq,fix_duration = aln.seq,aln.durations
+    if len(fix_seq) <= kmer_n:
+        return path,None #The path is too short to be fixed
     fix_path = seq2path(fix_seq,fix_duration,idx2kmer)
-    return np.asarray(fix_path)
+    return np.asarray(fix_path),True
 
 def seq2path(seq,duration,idx2kmer:List):
     """Convert a sequence to a path.

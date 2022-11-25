@@ -36,32 +36,45 @@ class LinkingGraph(object):
             if not any([x in self.idx2kmer[i] for x in variant_bases]):
                 self.invariant_kmers.append(i)
     
-    def add_reads(self,segments,decoded,durations,min_seg_len = 50,transition = None):
+    def add_reads(self,segments,decoded,durations,min_seg_len = 500,transition = None):
         if len(self.invariant_kmers) == 0:
             raise ValueError("Call build_invariant_kmers first.")
         if transition is not None:
             decoded = np.asarray([[transition(x) for x in d] for d in decoded])
         mask = np.isin(decoded,self.invariant_kmers)
-        breakings = np.where(mask)
+        breakings = np.where(mask) #Tuple (x,y) x is a Length N batch idx vector, y is a length N vector index of kmer in each segment. N is the number of invariant kmers
         start,end,duration = self.boundering(breakings)
-        #Start is the start idx [batch_idx, sig_idx] of a invariant kmer
-        #End is the end idx [batch_idx, sig_idx] of a invariant kmer
-        for i,start_index in tqdm(enumerate(start[:,:-1].T),total = len(start)-1):
+        #Start is a 2XN start idxes [batch_idx, sig_idx] of a invariant kmer
+        #End is a 2XN vector the end idx [batch_idx, sig_idx] of a invariant kmer
+        curr = 1
+        N = len(start[0])
+        prev = 0
+        while curr < N:
+            start_index = start[:,prev]
             s_i,s_j = start_index
-            next_i = start[0][i+1]
+            next_i = start[0][curr]
             if next_i != s_i:
+                #Skip because we are not at different batch
+                prev = curr
+                curr += 1
                 continue
-            if (start[1][i+1] - s_j) < min_seg_len:
+            if (start[1][curr] - s_j) < min_seg_len:
+                curr += 1
                 continue
-            if (end[1][i+1] > durations[s_i]):
+            if (end[1][curr] > durations[s_i]):
+                #Skip because this segment at the padding region
+                prev = curr + 1
+                curr += 2
                 continue
             curr_kmer = decoded[s_i,s_j]
-            curr_segment = segments[s_i,s_j:end[1][i+1]+1]
-            curr_path = decoded[s_i,s_j:end[1][i+1]+1]
+            curr_segment = segments[s_i,s_j:end[1][curr]+1]
+            curr_path = decoded[s_i,s_j:end[1][curr]+1]
             if curr_kmer not in self.nodes.keys():
                 node = KmerNode(curr_kmer)
                 self.nodes[curr_kmer] = node
             self.nodes[curr_kmer].add_segment(curr_segment,curr_path)
+            prev = curr
+            curr += 1
     
     def boundering(self,breakings):
         x,y = breakings
@@ -76,28 +89,42 @@ class LinkingGraph(object):
     def sampling_once(self,max_len,add_noise = 0):
         segment = np.asarray([])
         path = np.asarray([],dtype = np.int16)
+        path_idx = np.asarray([],dtype = np.int16)
+        curr_i = 0
         p = np.asarray([x.weight for x in self.nodes.values()])
         if np.random.random() < exploration:
             kmer = np.random.choice(list(self.nodes.keys()))#random choose a kmer to start
         else:
             kmer = list(self.nodes.keys())[np.argmax(p)]
         while len(segment)<max_len:
+            if kmer not in self.nodes.keys():
+                break #Sampling to a dead end
             node = self.nodes[kmer]
             curr_seg,curr_path,kmer = node.sampling(exploration = self.exploration)
+            if len(curr_seg) + len(segment) > max_len:
+                break #The maximum length has been reached
             segment = np.concatenate((segment,curr_seg),axis = 0)
             path = np.concatenate((path,curr_path),axis = 0)
+            path_idx = np.concatenate((path_idx,np.full(len(curr_path),curr_i)),axis = 0)
+            curr_i += 1
         if add_noise > 0:
             segment += np.random.normal(loc = 0.0,scale = add_noise,size = len(segment))
-        return segment[:max_len],path[:max_len]
+        if len(segment)<max_len:
+            segment = np.concatenate((segment,np.full(max_len-len(segment),0)),axis = 0)
+            path = np.concatenate((path,np.full(max_len-len(path),-1)),axis = 0)
+            path_idx = np.concatenate((path_idx,np.full(max_len-len(path_idx),-1)),axis = 0)
+        return segment[:max_len],path[:max_len],path_idx[:max_len]
     
     def sampling(self,max_len,n_times):
         segments = []
         paths = []
+        path_idxs = []
         for i in tqdm(range(n_times),desc = "Sampling"):
-            seg,path = self.sampling_once(max_len)
+            seg,path,path_idx = self.sampling_once(max_len)
             segments.append(seg)
             paths.append(path)
-        return np.stack(segments,axis = 0),np.stack(paths,axis = 0)
+            path_idxs.append(path_idx)
+        return np.stack(segments,axis = 0),np.stack(paths,axis = 0),np.stack(path_idxs,axis = 0)
         
 class KmerNode(object):
     def __init__(self,kmer):
@@ -210,12 +237,13 @@ if __name__ == "__main__":
     parser.add_argument("--modified","-m",required = True,type = str,help = "The modification folder.")
     parser.add_argument("--output","-o",required = True,type = str,help = "The output folder.")
     parser.add_argument("--sample_n","-n",type = int,default = 100000,help = "The number of sampling.")
-    parser.add_argument("--mixture","-mix",type = float,default = 0.5,help = "The mixture ratio of the control and the modified.")
+    parser.add_argument("--mixture","-mix",type = float,default = 0.5,help = "The mixture ratio of the control and the modified, len(m)/len(c).")
     parser.add_argument("--exploration","-e",type = float,default = 0.1,help = "The exploration ratio.")
     parser.add_argument("--max",type = int,default = None,help = "The maximum number of segments to load.")
     parser.add_argument("--canonical_base","-cb",type = str,default = "A",help = "The canonical base.")
     parser.add_argument("--modified_base","-mb",type = str,default = "M",help = "The modified base.")
     parser.add_argument("--min_seq_len",'-ms',type = int,default = 7, help = "The minimum sequence length to be added in.")
+    parser.add_argument("--min_seg_len", default = 500, type = int, help = "The minimum signal segment length to be added in.")
     args = parser.parse_args(sys.argv[1:])
     
     ##Testing code
@@ -246,24 +274,51 @@ if __name__ == "__main__":
     a2m_p = partial(a2m,idx2kmer = config['idx2kmer'],kmer2idx = config['kmer2idx_dict'])
     lg = LinkingGraph(config)
     lg.build_invariant_kmers([args.canonical_base,args.modified_base])
-    
+    print("Loading control data...")
     chunks_control,path_control,seqs_control,seq_lens_control,durations_control,delooped = load_data(control_folder,max_n = max_n,shuffle = True)
     if not delooped:
+        results_dict = {"Fixed":0, "No need to fix":0, "Fix failed":0}
         print("The control data is not delooped. Deloopping the path.")
-        for i,p in tqdm(enumerate(path_control),desc = "Fixing control path."):
+        with tqdm() as t:
+         t.total = len(path_control)
+         t.set_description("Fixing the path of control data.")
+         for i,p in enumerate(path_control):
             s = seqs_control[i]
             if len(s) < args.min_seq_len:
                 continue
-            path_control[i][:durations_control[i]] = fixing_looping_path(p[:durations_control[i]],s,idx2kmer = config['idx2kmer'],modified_base=args.modified_base,canonical_base=args.canonical_base)
+            fixed_path,fixing = fixing_looping_path(p[:durations_control[i]],s,idx2kmer = config['idx2kmer'],modified_base=args.modified_base,canonical_base=args.canonical_base)
+            if fixing is None:
+                results_dict["Fix failed"] += 1
+            elif fixing:
+                results_dict['Fixed'] += 1
+                path_control[i][:durations_control[i]] = fixed_path
+            else:
+                results_dict['No need to fix'] += 1
+            t.set_description(f"Fixed {results_dict['Fixed']}, No need to fix {results_dict['No need to fix']}, Fix failed {results_dict['Fix failed']}")
+            t.update()
         np.save(os.path.join(args.control,"path_fix.npy"),path_control)
+    print("Loading modified data...")
     chunks_modified,path_modified,seqs_m6a,seq_lens_m6a,durations_m6a,delooped = load_data(modified_folder,max_n = max_n,shuffle = True)
     if not delooped:
         print("The modified data is not delooped. Deloopping the path.")
-        for i,p in tqdm(enumerate(path_modified),desc = "Fixing modified path."):
-            s = seqs_m6a[i]
-            if len(s) < args.min_seq_len:
-                continue
-            path_modified[i][:durations_m6a[i]] = fixing_looping_path(p[:durations_m6a[i]],s,idx2kmer = config['idx2kmer'],modified_base=args.modified_base,canonical_base=args.canonical_base)
+        results_dict = {"Fixed":0, "No need to fix":0, "Fix failed":0}
+        with tqdm() as t:
+            t.total = len(path_modified)
+            t.set_description("Fixing the path of modified data.")
+            for i,p in enumerate(path_modified):
+                s = seqs_m6a[i]
+                if len(s) < args.min_seq_len:
+                    continue
+                fixed_path,fixing = fixing_looping_path(p[:durations_m6a[i]],s,idx2kmer = config['idx2kmer'],modified_base=args.modified_base,canonical_base=args.canonical_base)
+                if fixing is None:
+                    results_dict["Fix failed"] += 1
+                elif fixing:
+                    results_dict['Fixed'] += 1
+                    path_modified[i][:durations_m6a[i]] = fixed_path
+                else:
+                    results_dict['No need to fix'] += 1
+                t.set_description(f"Fixed {results_dict['Fixed']}, No need to fix {results_dict['No need to fix']}, Fix failed {results_dict['Fix failed']}")
+                t.update()
         np.save(os.path.join(args.modified,"path_fix.npy"),path_modified)
 
     if chunks_control.shape[0]*mix_ratio>chunks_modified.shape[0]:
@@ -279,15 +334,16 @@ if __name__ == "__main__":
         seqs_m6a = seqs_m6a[:shrink]
         seq_lens_m6a = seq_lens_m6a[:shrink]
     print("Add control data (%d chunks) into the graph."%(chunks_control.shape[0]))
-    lg.add_reads(chunks_control,path_control,durations_control,transition = m2a_p)
+    lg.add_reads(chunks_control,path_control,durations_control,min_seg_len = args.min_seg_len,transition = m2a_p)
     print("Add modified data (%d chunks) into the graph."%(chunks_modified.shape[0]))
-    lg.add_reads(chunks_modified,path_modified,durations_m6a,transition = a2m_p)
+    lg.add_reads(chunks_modified,path_modified,durations_m6a,min_seg_len = args.min_seg_len,transition = a2m_p)
     print("Sampling the data.")
-    s,p = lg.sampling(chunks_control.shape[1],sample_n)
-    seqs = np.asarray([kmers2seq(x,lg.idx2kmer) for x in tqdm(p,total = len(p),desc = "Transfer to sequence")])
+    s,p,p_i = lg.sampling(chunks_control.shape[1],sample_n)
+    seqs = np.asarray([kmers2seq(x[x!=-1],lg.idx2kmer) for x in tqdm(p,total = len(p),desc = "Transfer to sequence")])
     seqs_len = np.asarray([len(x) for x in seqs])
-    loop_filter = np.asarray([max_loop(seq)<4 for seq in tqdm(seqs,total = len(seqs),desc = "apply filter")])
-    s,p,seqs,seqs_len = s[loop_filter],p[loop_filter],seqs[loop_filter],seqs_len[loop_filter]
+    # This is no longer needed as we already fix the loop in deloop function.
+    # loop_filter = np.asarray([max_loop(seq)<4 for seq in tqdm(seqs,total = len(seqs),desc = "apply filter")])
+    # s,p,seqs,seqs_len = s[loop_filter],p[loop_filter],seqs[loop_filter],seqs_len[loop_filter]
     print("%d samples left after filtering"%(len(s)))
     print("Maximum sequence length %d"%(np.max(seqs_len)))
     print("Saving the data")
@@ -296,4 +352,5 @@ if __name__ == "__main__":
     np.save(os.path.join(out_f,"path.npy"),p)
     np.save(os.path.join(out_f,"seqs"),seqs)
     np.save(os.path.join(out_f,"seq_lens.npy"),seqs_len)
+    np.save(os.path.join(out_f,"path_idx.npy"),p_i)
     
