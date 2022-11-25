@@ -24,15 +24,18 @@ module_dict = {'Res1d':partial(xron.nn.Res1d,batch_norm = nn.LayerNorm),
                'Attention_norm':xron.nn.AttentionNormalize,
                'LSTM':nn.LSTM,
                'ReLU':nn.ReLU,
+               'GELU':nn.GELU,
                'GRU':nn.GRU,
-               'Sigmoid':nn.Sigmoid}
+               'Sigmoid':nn.Sigmoid,
+               'BatchNorm':nn.BatchNorm1d,
+               'LayerNorm':nn.LayerNorm}
 # PORE_MODEL_F = "pore_models/5mer_level_table.model"
 PORE_MODEL_F = "pore_models/m6A_5mer_level.model"
 N_BASE = 5 #AGCTM
 EMBEDDING_SIZE = 128
 CNN_KERNAL_COMP= 25
 CNN_STRIDE = 11
-class CNN_CONFIG(object):
+class CNN_CONFIG(object):   
     CNN = {'N_Layer':3,
            'Layers': [{'layer_type':'Res1d','kernel_size':5,'stride':1,'out_channels':16},
                       {'layer_type':'Res1d','kernel_size':5,'stride':1,'out_channels':32},
@@ -46,8 +49,8 @@ class RNN_CONFIG(CNN_CONFIG):
 
 class FNN_CONFIG(RNN_CONFIG):
     FNN = {'N_Layer':2,
-           'Layers':[{'out_features':EMBEDDING_SIZE,'bias':True,'activation':'Sigmoid','dropout':None},
-                     {'out_features':N_BASE+1,'bias':True,'activation':'Linear','dropout':None}]}
+           'Layers':[{'out_features':EMBEDDING_SIZE,'bias':True,'activation':'Sigmoid','dropout':None,'normalization':None},
+                     {'out_features':N_BASE+1,'bias':True,'activation':'Linear','dropout':None,'normalization':None}]}
 class CONFIG(FNN_CONFIG):
     def __init__(self):
         self.EMBEDDING= {'n_layers':self.CNN['N_Layer']+3}
@@ -147,7 +150,13 @@ class BASE(nn.Module):
                 dropout = l.pop('dropout')
             else:
                 dropout = None
+            if "normalization" in l:
+                normalization = l.pop('normalization')
+            else:
+                normalization = None
             layers.append(nn.Linear(in_features = in_channels,**l))
+            if normalization is not None:
+                layers.append(module_dict[normalization](l['out_features']))
             if activation != 'Linear':
                 layers.append(module_dict[activation]())
             if dropout is not None:

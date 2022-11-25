@@ -129,9 +129,10 @@ def show_sample(sample:Dict, idx = 0):
 
 if __name__ == "__main__":
     print("Load dataset.")
-    chunks = np.load("/home/heavens/twilight_hdd1/m6A_Nanopore/6mA.zymo/191123.1.100pct/guppy_hac_extracted/chunks.npy")
-    reference = np.load("/home/heavens/twilight_hdd1/m6A_Nanopore/6mA.zymo/191123.1.100pct/guppy_hac_extracted/seqs.npy")
-    ref_len = np.load("/home/heavens/twilight_hdd1/m6A_Nanopore/6mA.zymo/191123.1.100pct/guppy_hac_extracted/seq_lens.npy")
+    folder = "/home/heavens/bridge_scratch/ELIGOS_dataset/IVT/control/kmers_guppy_4000_noise/"
+    chunks = np.load(folder + "chunks.npy")
+    reference = np.load(folder + "seqs_re.npy")
+    ref_len = np.load(folder + "seq_re_lens.npy")
     plt.hist(ref_len[ref_len<chunks.shape[1]],bins = 200)
     alphabet_dict = {'A':1,'C':2,'G':3,'T':4,'M':5}
     print("Filt dataset.")

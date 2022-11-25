@@ -452,8 +452,7 @@ def main(args):
             model_f = os.path.join(project_f,'BoostNano','model')
             boostnano_net = CSM()
             boostnano_evaluator = evaluator(boostnano_net,model_f)
-    overlay_signal = int(args.overlay_ratio * args.chunk_len)
-    config.EVAL['overlay'] = overlay_signal
+    config.EVAL['overlay'] = int(args.overlay_ratio * args.chunk_len)
     df = chunk_feeder(args.input, config, boostnano_evaluator)
     writer = Writer(args.output,config)
     writer.write_config(args.output)

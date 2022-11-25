@@ -11,7 +11,6 @@ from torchvision import transforms
 import torch.utils.data as data
 from torch.utils.data.dataloader import DataLoader
 from functools import partial
-#from torch.utils.tensorboard import SummaryWriter
 from xron.xron_model import CRNN, CONFIG
 from xron.xron_input import Dataset, ToTensor, NumIndex
 from xron.xron_train_base import Trainer, DeviceDataLoader, load_config
@@ -59,6 +58,7 @@ class SupervisedTrainer(Trainer):
     def train(self,epoches,optimizer,save_cycle,valid_cycle,save_folder,scheduler = None):
         self.save_folder = save_folder
         self._save_config()
+        initial_global_step = self.global_step
         for epoch_i in range(epoches):
             for i_batch, batch in enumerate(self.train_ds):
                 if (i_batch+1)%save_cycle==0:
@@ -76,6 +76,10 @@ class SupervisedTrainer(Trainer):
                 optimizer.step()
                 self.losses.append(loss.item())
                 self.global_step +=1
+                if self.config.TRAIN['run_n_test']:
+                    # run n test
+                    if self.global_step - initial_global_step > self.config.TRAIN['run_n_test']:
+                        return None
                 if self.logger is not None:
                     self.logger.add_scalar('Loss/train', loss.item(), self.global_step)
                 if (i_batch+1)%save_cycle==0:
@@ -85,6 +89,7 @@ class SupervisedTrainer(Trainer):
                         valid_error,valid_perror = self.valid_step(valid_batch)
                         self.errors.append(valid_error)
                         if self.logger is not None:
+                            self.logger.add_scalar('Error/train', error, self.global_step)
                             self.logger.add_scalar('Error/valid', valid_error, self.global_step)
                             self.logger.add_scalar('Error/valid_plain', valid_perror, self.global_step)
                         print("Epoch %d: Batch %d, loss %f, error %f valid_error %f, reducting_error %f"%(epoch_i, i_batch, loss,error, np.mean(valid_error),np.mean(valid_perror)))
@@ -98,6 +103,7 @@ class SupervisedTrainer(Trainer):
                     if scheduler is not None:
                         scheduler.step(valid_error)
                     if self.logger is not None:
+                        self.logger.add_scalar('Error/train', error, self.global_step)
                         self.logger.add_scalar('Error/valid', valid_error, self.global_step)
                         self.logger.add_scalar('Error/valid_plain', valid_perror, self.global_step)
                 
@@ -147,6 +153,25 @@ class SupervisedTrainer(Trainer):
                                   beam_cut_threshold = self.config.CTC['beam_cut_threshold'])
         return loss,error
 
+def load_data(chunk_f,seq_f,seqlen_f,mmap_mode = "r",alphabeta = "ACGT"):
+    chunks = np.load(chunk_f,mmap_mode= mmap_mode)
+    nan_filter = ~np.any(np.isnan(chunks),axis=1)
+    reference = np.load(seq_f,mmap_mode= mmap_mode)
+    ref_len = np.load(seqlen_f,mmap_mode= mmap_mode)
+    if len(chunks) > len(reference):
+        print("There are more chunks (%d) than the sequences (%d), it will be cut to equal to the sequences."%(len(chunks),len(reference)))
+        chunks = chunks[:len(reference)]
+    chunks = chunks[nan_filter]
+    reference = reference[nan_filter]
+    ref_len = ref_len[nan_filter]
+    ref_len = ref_len.astype(np.int64)
+    if reference[0].dtype.kind in ['U','S']:
+        alphabet_dict = {x:i+1 for i,x in enumerate(alphabeta)}
+        dataset = Dataset(chunks,seq = reference,seq_len = ref_len,transform = transforms.Compose([NumIndex(alphabet_dict),ToTensor()]))
+    else:
+        dataset = Dataset(chunks,seq = reference,seq_len = ref_len,transform = transforms.Compose([ToTensor()]))
+    return dataset
+
 def main(args):
     if args.threads:
         torch.set_num_threads(args.threads)
@@ -168,19 +193,9 @@ def main(args):
                  "keep_record":5,
                  "eval_size":100,
                  "optimizer":args.optimizer,
-                 "embedding_pretrain_model":args.embedding}
+                 "embedding_pretrain_model":args.embedding,
+                 "run_n_test":args.run_n_test}
     config = TRAIN_CONFIG()
-    print("Read chunks and sequence.")
-    chunks = np.load(args.chunks,mmap_mode= 'r')
-    nan_filter = ~np.any(np.isnan(chunks),axis=1)
-    reference = np.load(args.seq,mmap_mode= 'r')
-    ref_len = np.load(args.seq_len,mmap_mode= 'r')
-    if len(chunks) > len(reference):
-        print("There are more chunks (%d) than the sequences (%d), it will be cut to equal to the sequences."%(len(chunks),len(reference)))
-        chunks = chunks[:len(reference)]
-    chunks = chunks[nan_filter]
-    reference = reference[nan_filter]
-    ref_len = ref_len[nan_filter]
     print("Construct and load the model.")
     model_f = args.model_folder
     if args.retrain:
@@ -189,19 +204,13 @@ def main(args):
         config = config_old
     elif args.config:
         config = load_config(args.config)
-    # if config.CTC['mode'] == 'rna':
-    #     chunks,reference,ref_len = rna_filt(chunks,reference,ref_len)
-    # elif config.CTC['mode'] == 'dna':
-    #     chunks,reference,ref_len = dna_filt(chunks,reference,ref_len)
-    ### This filter step is done before the data chunks are prepared.
-    ref_len = ref_len.astype(np.int64)
-    if reference[0].dtype.kind in ['U','S']:
-        alphabet_dict = {x:i+1 for i,x in enumerate(TRAIN_CONFIG.CTC['alphabeta'])}
-        dataset = Dataset(chunks,seq = reference,seq_len = ref_len,transform = transforms.Compose([NumIndex(alphabet_dict),ToTensor()]))
+    print("Read chunks and sequence.")
+    dataset = load_data(args.chunks,args.seq,args.seq_len,mmap_mode = "r",alphabeta = config.CTC['alphabeta'])
+    if args.eval_chunks:
+        eval_ds = load_data(args.eval_chunks,args.eval_seq,args.eval_seq_len,mmap_mode = "r",alphabeta = config.CTC['alphabeta'])
     else:
-        dataset = Dataset(chunks,seq = reference,seq_len = ref_len,transform = transforms.Compose([ToTensor()]))
-    eval_size = config.TRAIN['eval_size']
-    dataset,eval_ds = torch.utils.data.random_split(dataset,[len(dataset) - eval_size, eval_size], generator=torch.Generator().manual_seed(42))
+        eval_size = config.TRAIN['eval_size']
+        dataset,eval_ds = torch.utils.data.random_split(dataset,[len(dataset) - eval_size, eval_size], generator=torch.Generator().manual_seed(42))
     loader = data.DataLoader(dataset,batch_size = config.TRAIN['batch_size'],shuffle = True, num_workers = 2)
     loader_eval = data.DataLoader(eval_ds,batch_size = config.TRAIN['batch_size'],shuffle = True, num_workers = 0)
     DEVICE = args.device
@@ -209,10 +218,12 @@ def main(args):
     loader_eval = DeviceDataLoader(loader_eval,device = DEVICE)
     print("Train dataset: %d batches; Evaluation dataset: %d batches"%(len(loader),len(loader_eval)))
     net = CRNN(config)
-    writer = SummaryWriter()
-    #sample_signal = dataset[0]['signal'].unsqueeze(0)
-    #writer.add_graph(net,sample_signal)
-    # writer = None
+    if args.logging:
+        writer = SummaryWriter(comment = "LR={LR}_MODEL={MODEL}_ReTrain={ReTrain}_ReOL={ReOL}".format(LR=args.lr,MODEL=os.path.basename(args.model_folder),ReTrain=args.retrain,ReOL=args.retrain_on_last))
+        writer.add_text('chunks',args.chunks)
+        writer.add_text('seq',args.seq)
+    else:
+        writer = None
     t = SupervisedTrainer(loader,net,config,eval_dataloader = loader_eval,logger = writer)
     if args.retrain:
         print("Load previous trained model.")
@@ -242,8 +253,8 @@ def main(args):
     lr = args.lr
     epoches = args.epoches
     optim = optimizers[config.TRAIN['optimizer']](net.parameters(),lr = lr)
-    # scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optim, 'min', patience = 10,factor = 0.3,verbose = True)
-    scheduler = None
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optim, 'min', patience = 10,factor = 0.3,verbose = True)
+    # scheduler = None
     COUNT_CYCLE = args.report
     valid_check_cycle = args.valid_cycle
     print("Begin training the model.")
@@ -261,6 +272,12 @@ if __name__ == "__main__":
                         help="The .npy file contain the sequence.")
     parser.add_argument('--seq_len', required = True,
                         help="The .npy file contain the sueqnece length.")
+    parser.add_argument('--eval_chunks',default = None,
+                        help="The .npy file contain the chunks for evaluation.")
+    parser.add_argument('--eval_seq',default = None,
+                        help="The .npy file contain the sequence for evaluation.")
+    parser.add_argument('--eval_seq_len',default = None,
+                        help="The .npy file contain the sequence length for evaluation.")
     parser.add_argument('--embedding', default = None,
                         help="The folder contains the embedding model, if retrain is enable this will have no effect.")
     parser.add_argument('--device', default = 'cuda',
@@ -284,11 +301,17 @@ if __name__ == "__main__":
                             default is RMSprop")
     parser.add_argument('--threads', type = int, default = None,
                         help = "Number of threads used by Pytorch")
+    parser.add_argument('--run_n_test', type = int, default = None,
+                        help = "Number of batches to run for test if not None.")
     parser.add_argument('--retrain_on_last',type = int, default = None,
                         help = "Number of FNN layers to retrain on, the rest of the layers will be freezed.")
     parser.add_argument('--reinitialize_methylation', dest = "reinitialize_methylation", action = "store_true",
                         help = "Reinitialize the methylation base projection in last FNN layer.")
+    parser.add_argument('--nolog', action="store_false", dest="logging",
+                        help = "Disable logging.")
     args = parser.parse_args(sys.argv[1:])
+    if args.logging:
+        from torch.utils.tensorboard import SummaryWriter
     if args.retrain and args.embedding:
         args.embedding = None
         print("Embedding is being overrided by --load argument.")

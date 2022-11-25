@@ -130,11 +130,14 @@ class Trainer(object):
             latest_ckpt = f.readline().strip().split(':')[1]
             if update_global_step:
                 self.global_step = int(latest_ckpt.split('-')[1])
-        ckpt = torch.load(os.path.join(save_folder,latest_ckpt),
-                          map_location=self.device)
+        ckpt = torch.load(os.path.join(save_folder,latest_ckpt),map_location=self.device)
         for key,net in ckpt.items():
             if key in self.nets.keys():
-                self.nets[key].load_state_dict(net,strict = True)
+                try:
+                    self.nets[key].load_state_dict(net,strict = True)
+                except RuntimeError:
+                    print(f"Exact loading {key} failed, try load loosely.")
+                    self.nets[key].load_state_dict(net,strict = False)
                 self.nets[key].to(self.device)
             else:
                 print("%s net is defined in the checkpoint but is not imported because it's not defined in the model."%(key))

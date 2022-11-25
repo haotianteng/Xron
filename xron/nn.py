@@ -15,8 +15,7 @@ class AttentionNormalize(nn.Module):
     def __init__(self, 
                  in_channels: int, 
                  out_channels: int = 5, 
-                 activation: nn.Module = nn.SiLU,
-                 norm: nn.Module = nn.LayerNorm):
+                 activation: nn.Module = nn.SiLU):
         super().__init__()
         hidden_num = out_channels
         self.hidden_num = hidden_num
@@ -24,8 +23,7 @@ class AttentionNormalize(nn.Module):
                                   hidden_num,
                                   stride = 1,
                                   kernel_size = 1)
-        self.GELU = nn.GELU()
-        self.norm = norm(hidden_num)
+        self.ReLU = nn.ReLU()
         self.wmf = torch.nn.Linear(in_channels,hidden_num)
         self.wmb = torch.nn.Linear(in_channels,hidden_num)
         self.wk = torch.nn.Linear(hidden_num,hidden_num)
@@ -36,7 +34,7 @@ class AttentionNormalize(nn.Module):
         out = out.unsqueeze(dim = 1)*self.wmb(x.permute(0,2,1)) + x0.permute(0,2,1) #[N,L,C]
         k = self.wk(out)
         scale = torch.mean(torch.sum(k*out,dim = 2),dim = 1) #[N]
-        scale = self.GELU(scale)
+        scale = self.ReLU(scale)
         scale = (0.2+scale)/torch.sqrt(1.2+scale)/torch.sqrt(torch.tensor(self.hidden_num))
         out = out*scale[:,None,None]
         # out = self.norm(out)#[N,L,C]

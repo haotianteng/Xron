@@ -52,6 +52,7 @@ def write_modified_probability(args):
                                   base_list = [x for x in args.alphabeta],
                                   n_largest_p = args.n_largest_p)
             if mod_p is None:
+                fail_count += 1
                 continue
             result_h = read_h['Analyses/Basecall_1D_%s/BaseCalled_template'%(args.basecall_entry)]
             if 'ModifiedProbability' in result_h:
