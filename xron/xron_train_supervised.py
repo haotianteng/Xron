@@ -143,6 +143,9 @@ class SupervisedTrainer(Trainer):
         seq = batch['seq']
         seq_len = batch['seq_len'].view(-1)
         loss = net.ctc_loss(out,out_len,seq,seq_len)
+        if self.config.TRAIN['label_smooth']:
+            label_alternation = self.config.TRAIN['label_alternation'] 
+            loss = net.ctc_loss_uncertain_label(out,out_len,seq,seq_len,label_alternation,self.config.TRAIN['label_smooth'])
         error = None
         if get_error:
             error = net.ctc_error(out,
@@ -153,14 +156,18 @@ class SupervisedTrainer(Trainer):
                                   beam_cut_threshold = self.config.CTC['beam_cut_threshold'])
         return loss,error
 
-def load_data(chunk_f,seq_f,seqlen_f,mmap_mode = "r",alphabeta = "ACGT"):
+def load_data(chunk_f,seq_f,seqlen_f,mmap_mode = "r",alphabeta = "ACGT",max_n = None):
     chunks = np.load(chunk_f,mmap_mode= mmap_mode)
-    nan_filter = ~np.any(np.isnan(chunks),axis=1)
     reference = np.load(seq_f,mmap_mode= mmap_mode)
     ref_len = np.load(seqlen_f,mmap_mode= mmap_mode)
     if len(chunks) > len(reference):
         print("There are more chunks (%d) than the sequences (%d), it will be cut to equal to the sequences."%(len(chunks),len(reference)))
         chunks = chunks[:len(reference)]
+    if max_n is not None:
+        chunks = chunks[:max_n]
+        reference = reference[:max_n]
+        ref_len = ref_len[:max_n]
+    nan_filter = ~np.any(np.isnan(chunks),axis=1)
     chunks = chunks[nan_filter]
     reference = reference[nan_filter]
     ref_len = ref_len[nan_filter]
@@ -194,7 +201,9 @@ def main(args):
                  "eval_size":100,
                  "optimizer":args.optimizer,
                  "embedding_pretrain_model":args.embedding,
-                 "run_n_test":args.run_n_test}
+                 "run_n_test":args.run_n_test,
+                 "label_alternation":[5,1],#5 is the M label and 1 is the A label
+                 "label_smooth":args.label_smooth}
     config = TRAIN_CONFIG()
     print("Construct and load the model.")
     model_f = args.model_folder
@@ -206,10 +215,11 @@ def main(args):
         config = load_config(args.config)
     print("Read chunks and sequence.")
     dataset = load_data(args.chunks,args.seq,args.seq_len,mmap_mode = "r",alphabeta = config.CTC['alphabeta'])
+    eval_size = config.TRAIN['eval_size']
     if args.eval_chunks:
-        eval_ds = load_data(args.eval_chunks,args.eval_seq,args.eval_seq_len,mmap_mode = "r",alphabeta = config.CTC['alphabeta'])
+        print("Read evaluation chunks and sequence.")
+        eval_ds = load_data(args.eval_chunks,args.eval_seq,args.eval_seq_len,mmap_mode = "r",alphabeta = config.CTC['alphabeta'],max_n = eval_size*args.batch_size)
     else:
-        eval_size = config.TRAIN['eval_size']
         dataset,eval_ds = torch.utils.data.random_split(dataset,[len(dataset) - eval_size, eval_size], generator=torch.Generator().manual_seed(42))
     loader = data.DataLoader(dataset,batch_size = config.TRAIN['batch_size'],shuffle = True, num_workers = 2)
     loader_eval = data.DataLoader(eval_ds,batch_size = config.TRAIN['batch_size'],shuffle = True, num_workers = 0)
@@ -309,6 +319,7 @@ if __name__ == "__main__":
                         help = "Reinitialize the methylation base projection in last FNN layer.")
     parser.add_argument('--nolog', action="store_false", dest="logging",
                         help = "Disable logging.")
+    parser.add_argument('--label_smooth', type = float, default = 0.0)
     args = parser.parse_args(sys.argv[1:])
     if args.logging:
         from torch.utils.tensorboard import SummaryWriter

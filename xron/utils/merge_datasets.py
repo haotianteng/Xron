@@ -60,9 +60,12 @@ if __name__ == "__main__":
     os.makedirs(args.output,exist_ok = True)
     args.fs = args.input.strip().split(',')
     args.keys = args.key.strip().split(',')
-    if ',' in args.max:
-        args.max = [int(x) for x in args.max.split(',')]
+    if args.max:
+        if ',' in args.max:
+            args.max = [int(x) for x in args.max.split(',')]
+        else:
+            args.max = [int(args.max)] * len(args.fs)
+        assert len(args.fs) == len(args.max)
     else:
-        args.max = [int(args.max)] * len(args.fs)
-    assert len(args.fs) == len(args.max)
+        args.max = None
     main(args)

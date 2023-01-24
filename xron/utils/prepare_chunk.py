@@ -249,6 +249,9 @@ def extract(args):
             if args.write_correction:
                 ref_idx_aligned = ref_idx[ref_idx<=pos[-1]]
                 ref_seq_aligned = ref_seq[:len(ref_idx_aligned)]
+                if 'N' in ref_seq_aligned:
+                    fail_read_count["Kmer extraction failed"] += 1
+                    continue
                 qs_aligned = qs[:len(ref_idx_aligned)]
                 ref_sig_idx = [np.where(pos == x)[0][0] for x in ref_idx_aligned] #The ith ref_sig_idx REF_i means the ith base in reference sequence is the REF_i signal point at the reversed signal.
                 read_h['Analyses/Segmentation_%s/Reference_corrected'%(basecall_entry)].create_dataset("ref_sig_idx",data = ref_sig_idx)

@@ -15,7 +15,7 @@ from numpy.random import default_rng
 from xron.utils.vq import vq
 from xron.utils.conformer import ConformerLayer
 import editdistance
-from typing import List,Dict
+from typing import List,Dict,Tuple
 
 ### Encoder Configuration
 module_dict = {'Res1d':partial(xron.nn.Res1d,batch_norm = nn.LayerNorm),
@@ -251,6 +251,27 @@ class CRNN(BASE):
                  seq_len:Tensor):
         return self.ctc(posterior,seq,posterior_len,seq_len)
     
+    def ctc_loss_uncertain_label(self,
+                                 posterior:Tensor,
+                                 posterior_len:Tensor,
+                                 seq:Tensor,
+                                 seq_len:Tensor,
+                                 uncertain_label:Tuple[int,int],
+                                 uncertain_label_weight:float = 0.1):
+        """
+        Calculate the smooth CTC loss with label i replaced by j with weight e,
+        where P(y) = e * P(y=i) + (1-e) * P(y=j)
+        And the label smooth loss is calculated as:
+            L = e*CTCloss(S) + (1-e)*CTCloss(S[i->j])
+        Where S[i->j] is the sequence with all i replaced by j.
+        """
+        i,j = uncertain_label
+        seq_i2j = seq.clone()
+        seq_i2j[seq_i2j == i] = j
+        loss = (1-uncertain_label_weight) * self.ctc(posterior,seq,posterior_len,seq_len) + \
+                uncertain_label_weight * self.ctc(posterior,seq_i2j,posterior_len,seq_len)
+        return loss
+
     def ctc_decode(self,
                    posteriors:Tensor,
                    alphabet:str = "NACGT",

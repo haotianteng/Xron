@@ -231,7 +231,7 @@ def main(args):
     sam_writer()
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='Process some integers.')
+    parser = argparse.ArgumentParser(description='Add modification tag into sam file.')
     parser.add_argument('--fastq', required = True, type=str, help='The merged fastq file')
     parser.add_argument('--sam', required = True, type=str, help='The sam file')
     parser.add_argument('--modified',default = "6mA", type=str, help='The modified base, \

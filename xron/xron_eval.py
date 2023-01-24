@@ -127,7 +127,7 @@ def viterbi_decode(logits:torch.tensor):
     sequence,moves = raw2seq(sequence)
     return sequence,list(moves.astype(int))
 
-def consensus_call(seqs,assembly_func,metas,moves,qcs,strides,hiddens = None, logits = None):
+def consensus_call(seqs,assembly_func,metas,moves,qcs,strides,hiddens = None, logits = None,jump_ratio = None):
     if hiddens:
         curr = [x for x in zip(seqs,metas,qcs,moves,hiddens,logits) if x[1][1] == metas[0][1]]
         curr_seqs,curr_meta,qs_list,moves,hiddens,logits = zip(*curr)
@@ -143,7 +143,7 @@ def consensus_call(seqs,assembly_func,metas,moves,qcs,strides,hiddens = None, lo
         curr = [x for x in zip(seqs,metas,qcs,moves) if x[1][1] == metas[0][1]]
         curr_seqs,curr_meta,qs_list,moves = zip(*curr)
         pad_length = len(moves[0]) - curr_meta[-1][2]//strides
-    css = assembly_func(curr_seqs,qs_list = qs_list,jump_step_ratio = 0.9)
+    css = assembly_func(curr_seqs,qs_list = qs_list,jump_step_ratio = jump_ratio)
     curr_move = np.asarray(moves).flatten()
     fast5f = set([x[0] for x in curr_meta])
     id = set([x[1] for x in curr_meta])
@@ -394,7 +394,15 @@ class Evaluator(object):
         start = timer()
         if len(self.seqs) == 0:
             return
-        r = consensus_call(self.seqs,self.assembly_func,self.metas,self.moves,qcs = self.qcs,strides = self.config.CNN['Layers'][-1]['stride'], hiddens = self.hiddens, logits = self.logits)
+        r = consensus_call(self.seqs,
+                           self.assembly_func,
+                           self.metas,
+                           self.moves,
+                           qcs = self.qcs,
+                           strides = self.config.CNN['Layers'][-1]['stride'], 
+                           hiddens = self.hiddens, 
+                           logits = self.logits,
+                           jump_ratio= 1-float(self.config.EVAL['overlay'])/self.config.EVAL['chunk_len'])
         self.assembly_time += timer() - start
         start = timer()
         self.writer.add(*r)

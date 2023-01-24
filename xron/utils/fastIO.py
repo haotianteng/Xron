@@ -27,7 +27,7 @@ def read_fastq(fastq):
             if line.startswith("@"):
                 records['name'].append(line.strip()[1:])
                 records['sequences'].append(next(f).strip())
-                assert next(f).strip() == "+" #skip the "+"
+                assert next(f).strip() == "+",print(line) #skip the "+"
                 records['quality'].append(next(f).strip())
     return records
 
