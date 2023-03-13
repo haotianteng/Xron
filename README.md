@@ -11,7 +11,7 @@ Built with **PyTorch** and python 3.8+
 
 RNA basecall:
 ```
-python xron/xron_call.py -i <input_fast5_folder> -o <output_folder> -c m6a_model.config
+python xron/xron_eval.py -i <input_fast5_folder> -o <output_folder> --model models/ENEYFT
 ```
 
 ---
@@ -28,7 +28,6 @@ python xron/xron_call.py -i <input_fast5_folder> -o <output_folder> -c m6a_model
     - [Hardware request](#hardware-request)
     - [Prepare training data set](#prepare-training-data-set)
     - [Train a model](#train-a-model)
-    - [Training parameters](#training-parameters)
 
 ## Install
 ### <a name="install-using-pip"></a> Install using `pip` (recommended)
@@ -59,21 +58,30 @@ Xron also include a non-homegeneous HMM (NHMM) for signal re-sqquigle. To use it
 
 We provided sample code in xron-samples folder to achieve m6A-aware basecall and identify m6A site.
 ```
-python chiron/entry.py call -i chiron/example_folder/ -o <output_folder> -m chiron/model/DNA_default --preset dna-pre
+python xron/xron_eval.py -i xron/example_folder/ -o <output_folder> -m xron/models/ENEYFT --beam 30 --fast5
 ```
 
+## Training
+### Hardware request
+Xron training requires GPU, our training is conducted on Nvidia GeForce 3090Ti
+### Prepare training data set
+To prepare training dataset for m6A training, we offered scripts to extract training data from basecalled fast5 files. We require a control dataset and a fully/highly methylated dataset.
+```bash
+python xron/utils/prepare_chunk.py -i $FAST5/ -o $DF/ --extract_seq --write_correction --basecall_entry 001 --alternative_entry 000 --basecaller guppy --reference $REFERENCE_FASTA --mode rna_meth --extract_kmer -k 5 --chunk_len 4000
 ```
-python xron/xron_rcnn_train.py  --data_dir <signal_label folder/ tfrecord file> --log_dir <model_log>
-```
-### Training parameters
-Following parameters can be passed to Chiron when training
+basecall_entry is the basecalled entry in the fast5 files, usually is 000 or 001. --basecaller specify the basecaller used, can be guppy or xron. The script will also write the corrected sequence back to FAST5 files if --write_correction is set. This is vital before we further re-squiggle the reads.
 
-`data_dir`(Required): The folder containing your signal and label files.  
-`log_dir`(Required): The folder where you want to save the model.  
-`model_name`(Required): The name of the model. The record will be stored in the directory `log_dir/model_name/`
-`sequence_len`: The length of the segment you want to separate the sequence into. Longer length requires larger RAM.  
-`batch_size`: The batch size.  
-`step_rate`: Learning rate of the optimizer.  
-`max_step`: Maximum step of the optimizer.  
-`k_mer`: Chiron supports learning based on k-mer instead of a single nucleotide, this should be an odd number, even numbers will cause an error.  
-`retrain`: If this is a new model, or you want to load the model you trained before. The model will be loaded from  `log_dir/model_name/`  
+Then we use the NRHMM to re-squiggle the dataset.
+```bash
+python xron/nrhmm/hmm_relabel.py -i $DF/ -m models/NRHMM/
+```
+Finally the datasets are hybrid to make the training dataset
+```bash
+python xron/nrhmm/hybrid_data.py -c $CONTROL/ -m $METH/ -o $OUTPUT/
+```
+
+### Train a model
+
+```bash
+python xron/xron_train_supervised.py  -i $DF/chunks.npy --seq $DF/seqs.npy --seq_lens.npy $DF/seq_lens.npy -o $OUTPUT/$MODEL_NAME 
+```
