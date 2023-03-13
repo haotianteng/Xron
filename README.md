@@ -50,10 +50,6 @@ You will also need to install dependencies.
 python setup.py install
 ```
 
-## Segmentation using NHMM
-Xron also include a non-homegeneous HMM (NHMM) for signal re-sqquigle. To use it:
-[TODO] add the code
-
 ### Test run
 
 We provided sample code in xron-samples folder to achieve m6A-aware basecall and identify m6A site.
@@ -63,21 +59,21 @@ python xron/xron_eval.py -i xron/example_folder/ -o <output_folder> -m xron/mode
 
 ## Training
 ### Hardware request
-Xron training requires GPU, our training is conducted on Nvidia GeForce 3090Ti
+Training Xron model requires modern GPU, our training is conducted on Nvidia GeForce 3090Ti
 ### Prepare training data set
-To prepare training dataset for m6A training, we offered scripts to extract training data from basecalled fast5 files. We require a control dataset and a fully/highly methylated dataset.
+To prepare training dataset for m6A training, we offered scripts to extract training data from basecalled fast5 files. A control dataset and a fully/highly methylated dataset is required.
 ```bash
-python xron/utils/prepare_chunk.py -i $FAST5/ -o $DF/ --extract_seq --write_correction --basecall_entry 001 --alternative_entry 000 --basecaller guppy --reference $REFERENCE_FASTA --mode rna_meth --extract_kmer -k 5 --chunk_len 4000
+python xron/utils/prepare_chunk.py -i $FAST5/ -o $DATASET/ --extract_seq --write_correction --basecall_entry 001 --alternative_entry 000 --basecaller guppy --reference $REFERENCE_FASTA --mode rna_meth --extract_kmer -k 5 --chunk_len 4000
 ```
 basecall_entry is the basecalled entry in the fast5 files, usually is 000 or 001. --basecaller specify the basecaller used, can be guppy or xron. The script will also write the corrected sequence back to FAST5 files if --write_correction is set. This is vital before we further re-squiggle the reads.
 
-Then we use the NRHMM to re-squiggle the dataset.
+Then use the NRHMM to re-squiggle the dataset.
 ```bash
-python xron/nrhmm/hmm_relabel.py -i $DF/ -m models/NRHMM/
+python xron/nrhmm/hmm_relabel.py -i $DATASET/ -m models/NRHMM/
 ```
-Finally the datasets are hybrid to make the training dataset
+Finally the datasets can be hybrided to make a training dataset
 ```bash
-python xron/nrhmm/hybrid_data.py -c $CONTROL/ -m $METH/ -o $OUTPUT/
+python xron/nrhmm/hybrid_data.py -c $CONTROL_DATASET/ -m $METH_DATASET/ -o $TRAIN/
 ```
 
 ### Train a model
