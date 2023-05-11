@@ -9,9 +9,9 @@ Built with **PyTorch** and python 3.8+
 -->
 
 
-m6A-aware RNA basecall:
+m6A-aware RNA basecall one-liner:
 ```
-python xron/xron_eval.py -i <input_fast5_folder> -o <output_folder> -m models/ENEYFT
+xron call -i <input_fast5_folder> -o <output_folder> -m models/ENEYFT
 ```
 
 ---
@@ -48,12 +48,13 @@ You will also need to PyTorch according to your environment. PyTorch 1.12 is the
 pip install xron
 ```
 ## Basecall
-Before running basecall using Xron, you need to download the models from our AWS s3 bucket by run xron init
+Before running basecall using Xron, you need to download the models from our AWS s3 bucket by running **xron init**
 ```bash
 xron init
 ```
-This will automatically download the models and put it into the models folder.
-We provided sample code in xron-samples folder to achieve m6A-aware basecall and identify m6A site. To run xron on raw fast5 files:
+This will automatically download the models and put them into the *models* folder.
+We provided sample code in xron-samples folder to achieve m6A-aware basecall and identify m6A site. 
+To run xron on raw fast5 files:
 ```
 xron call -i ${INPUT_FAST5} -o ${OUTPUT} -m models/ENEYFT --fast5 --beam 50 --chunk_len 4000
 ```
@@ -61,7 +62,7 @@ xron call -i ${INPUT_FAST5} -o ${OUTPUT} -m models/ENEYFT --fast5 --beam 50 --ch
 ## Segmentation using NHMM
 ### Prepare chunk dataset
 Xron also include a non-homegeneous HMM (NHMM) for signal re-sqquigle. To use it:
-Firstly we need to extract the chunk and basecalled sequence using prepare_chunk.py
+Firstly we need to extract the chunk and basecalled sequence using **prepare** module
 ```bash
 xron prepare -i ${FAST5_FOLDER} -o ${CHUNK_FOLDER} --extract_seq --basecaller guppy --reference ${REFERENCE} --mode rna_meth --extract_kmer -k 5 --chunk_len 4000 --write_correction
 ```
