@@ -1,8 +1,3 @@
-"""
-Created on Wed Sep 15 08:44:24 2021
-
-@author: Haotian Teng
-"""
 import os
 import sys
 import h5py
@@ -70,7 +65,7 @@ def chunk_feeder(fast5_f,config,boostnano_evaluator = None):
         last_chunk_len = len(last_chunk)
         current_chunks[-1]= np.pad(last_chunk,(0,chunk_len-last_chunk_len),'constant',constant_values = (0,0))
         chunks += current_chunks
-        meta_info += [(fast5_f,read_id,args.chunk_len)]*(len(current_chunks)-1) 
+        meta_info += [(fast5_f,read_id,chunk_len)]*(len(current_chunks)-1) 
         meta_info += [(fast5_f,read_id,last_chunk_len)]
         while len(chunks) >= batch_size:
             curr_chunks = chunks[:batch_size]
@@ -84,7 +79,8 @@ def chunk_feeder(fast5_f,config,boostnano_evaluator = None):
         yield torch.from_numpy(np.stack(chunks,axis = 0)[:,None,:].astype(np.float32)).to(device),curr_meta
 
 def qs(consensus, consensus_qs, output_standard='phred+33'):
-    """Calculate the quality score for the consensus read.
+    """
+    Calculate the quality score for the consensus read.
 
     Args:
         consensus (Int): 2D Matrix (bases, read length) given the count of base on each position.
@@ -476,10 +472,8 @@ def main(args):
     writer.flush()
     caller.writing_time += timer()-start_w
     print("NN_time:%f,assembly_time:%f,writing_time:%f"%(caller.nn_time,caller.assembly_time,caller.writing_time))
-            
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description='Call a xron model on dataset.')
+
+def add_arguments(parser):
     parser.add_argument('-i', '--input', required = True,
                         help = "The input folder contains the fast5 files.")
     parser.add_argument('-m', '--model_folder', required = True,
@@ -511,7 +505,8 @@ if __name__ == "__main__":
                         is 1 where Viterbi decoder is used.")
     parser.add_argument('--boostnano', action="store_true", dest="boostnano",
                         help = "Enable boostnano preprocessing.")
-    args = parser.parse_args(sys.argv[1:])
+
+def post_args(args):
     MEMORY_PER_BATCH_PER_SIGNAL=15000. #B
     if args.batch_size is None:
         if torch.cuda.is_available():
@@ -522,4 +517,11 @@ if __name__ == "__main__":
             args.batch_size = 1200
             print("No GPU is detected, the batch_size is setting to default %d"%(args.batch_size))
     os.makedirs(args.output,exist_ok=True)
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description='Call a xron model on dataset.')
+    add_arguments(parser)
+    args = parser.parse_args(sys.argv[1:])
+    post_args(args)
     main(args)

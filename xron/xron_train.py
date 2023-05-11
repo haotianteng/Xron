@@ -6,8 +6,8 @@ Created on Sun Dec 26 19:38:25 2021
 import os
 import sys
 import torch
-import partial
 import argparse
+from functools import partial
 from xron.xron_model import CONFIG,DECODER_CONFIG,CRITIC_CONFIG,MM_CONFIG
 from xron.xron_train_supervised import main as supervised_train
 from xron.xron_train_variational import main as reinforce_train
@@ -68,9 +68,7 @@ def main(args):
     args.config = train_config[args.module]
     train_module[args.module](args)
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description='Calling training module.')
+def add_arguments(parser):
     parser.add_argument('--module', required = True,
                         help = "The training module to call, can be Embedding, Supervised and Reinforce")
     parser.add_argument('-i', '--chunks', required = True,
@@ -100,6 +98,13 @@ if __name__ == "__main__":
                             default is RMSprop")
     parser.add_argument('--threads', type = int, default = None,
                         help = "Number of threads used by Pytorch")
-    args = parser.parse_args(sys.argv[1:])
+
+def post_args(args):
     os.makedirs(args.model_folder,exist_ok=True)
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description='Calling training module.')
+    add_arguments(parser)
+    args = parser.parse_args(sys.argv[1:])
     main(args)

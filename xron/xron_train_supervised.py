@@ -270,10 +270,7 @@ def main(args):
     print("Begin training the model.")
     t.train(epoches,optim,COUNT_CYCLE,valid_check_cycle,model_f,scheduler = scheduler)
     
-    
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description='Training model with tfrecord file')
+def add_arguments(parser):
     parser.add_argument('-i', '--chunks', required = True,
                         help = "The .npy file contain chunks.")
     parser.add_argument('-o', '--model_folder', required = True,
@@ -320,11 +317,17 @@ if __name__ == "__main__":
     parser.add_argument('--nolog', action="store_false", dest="logging",
                         help = "Disable logging.")
     parser.add_argument('--label_smooth', type = float, default = 0.0)
-    args = parser.parse_args(sys.argv[1:])
+
+def post_args(args):
     if args.logging:
         from torch.utils.tensorboard import SummaryWriter
     if args.retrain and args.embedding:
         args.embedding = None
         print("Embedding is being overrided by --load argument.")
     os.makedirs(args.model_folder,exist_ok=True)
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description='Training model with tfrecord file')
+    args = parser.parse_args(sys.argv[1:])
     main(args)

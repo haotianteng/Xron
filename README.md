@@ -9,75 +9,78 @@ Built with **PyTorch** and python 3.8+
 -->
 
 
-RNA basecall:
+m6A-aware RNA basecall:
 ```
-python xron/xron_eval.py -i <input_fast5_folder> -o <output_folder> --model models/ENEYFT
+python xron/xron_eval.py -i <input_fast5_folder> -o <output_folder> -m models/ENEYFT
 ```
 
 ---
 ## Table of contents
 
+- [Table of contents](#table-of-contents)
 - [Install](#install)
-    - [Install using `pip`](#install-using-pip)
-    - [Install from GitHub](#install-from-github)
+  - [Install from Source](#install-from-source)
+  - [Install from Pypi](#install-from-pypi)
 - [Basecall](#basecall)
-    - [Test run](#test-run)
-    - [Output](#output)
-    - [Output format](#output-format)
+- [Segmentation using NHMM](#segmentation-using-nhmm)
+  - [Prepare chunk dataset](#prepare-chunk-dataset)
+  - [Realign the signal using NHMM.](#realign-the-signal-using-nhmm)
 - [Training](#training)
-    - [Hardware request](#hardware-request)
-    - [Prepare training data set](#prepare-training-data-set)
-    - [Train a model](#train-a-model)
-
+  
 ## Install
-### <a name="install-using-pip"></a> Install using `pip` (recommended)
-To install with `pip`:
-
+For either installation method, recommend to create a vritual environment first using conda or venv, take conda for example
+```bash
+conda create --name YOUR_VIRTUAL_ENVIRONMENT python=3.8
+conda activate YOUR_VIRTUAL_ENVIRONMENT
 ```
-pip install xron  
-```
-This will install Xron
-PyTorch need to be installed according to your CUDA version and GPU version.
-
-### <a name="install-from-github"></a> Install from Source
+Then you can install from our pypi repository or install the newest version from github repository.
+### Install from Source
 
 ```
 git clone https://github.com/haotianteng/Xron.git
 cd Xron
-```
-You will also need to install dependencies.
-```
 python setup.py install
 ```
+You will also need to PyTorch according to your environment. PyTorch 1.12 is the version we used when developing xron, but later version is usually also good.
 
-### Test run
+### Install from Pypi
+```bash
+pip install xron
+```
+## Basecall
+Before running basecall using Xron, you need to download the models from our AWS s3 bucket by run xron init
+```bash
+xron init
+```
+This will automatically download the models and put it into the models folder.
+We provided sample code in xron-samples folder to achieve m6A-aware basecall and identify m6A site. To run xron on raw fast5 files:
+```
+xron call -i ${INPUT_FAST5} -o ${OUTPUT} -m models/ENEYFT --fast5 --beam 50 --chunk_len 4000
+```
 
-We provided sample code in xron-samples folder to achieve m6A-aware basecall and identify m6A site.
+## Segmentation using NHMM
+### Prepare chunk dataset
+Xron also include a non-homegeneous HMM (NHMM) for signal re-sqquigle. To use it:
+Firstly we need to extract the chunk and basecalled sequence using prepare_chunk.py
+```bash
+xron prepare -i ${FAST5_FOLDER} -o ${CHUNK_FOLDER} --extract_seq --basecaller guppy --reference ${REFERENCE} --mode rna_meth --extract_kmer -k 5 --chunk_len 4000 --write_correction
 ```
-python xron/xron_eval.py -i xron/example_folder/ -o <output_folder> -m xron/models/ENEYFT --beam 30 --fast5
+Replace the FAST5_FOLDER, CHUNK_FOLDER and REFERENCE with your basecalled fast5 file folder, your output folder and the path to the reference genome fasta file.
+
+### Realign the signal using NHMM.
+Then run the NHMM to realign ("resquiggle") the signal.
+```bash
+xron relabel -i ${CHUNK_FOLDER} -m ${MODEL} --device $DEVICE
 ```
+This will generate a paths.py file under CHUNK_FOLDER which gives the kmer segmentation of the chunks.
 
 ## Training
-### Hardware request
-Training Xron model requires modern GPU, our training is conducted on Nvidia GeForce 3090Ti
-### Prepare training data set
-To prepare training dataset for m6A training, we offered scripts to extract training data from basecalled fast5 files. A control dataset and a fully/highly methylated dataset is required.
+To train a new Xron model using your own dataset, you need to prepare your own training dataset, the dataset should includes a signal file (chunks.npy), labelled sequences (seqs.npy) and sequence length for each read (seq_lens.npy), and then run the xron supervised training module
 ```bash
-python xron/utils/prepare_chunk.py -i $FAST5/ -o $DATASET/ --extract_seq --write_correction --basecall_entry 001 --alternative_entry 000 --basecaller guppy --reference $REFERENCE_FASTA --mode rna_meth --extract_kmer -k 5 --chunk_len 4000
+xron train -i chunks.npy --seq seqs.npy --seq_len seq_lens.npy --model_folder OUTPUT_MODEL_FOLDER
 ```
-basecall_entry is the basecalled entry in the fast5 files, usually is 000 or 001. --basecaller specify the basecaller used, can be guppy or xron. The script will also write the corrected sequence back to FAST5 files if --write_correction is set. This is vital before we further re-squiggle the reads.
-
-Then use the NRHMM to re-squiggle the dataset.
+Training Xron model from scratch is hard, I would recommend to fine-tune our model by specify --load flag, for example we can finetune the provided ENEYFT model (model trained using cross-linked ENE dataset and finetuned on Yeast dataset):
 ```bash
-python xron/nrhmm/hmm_relabel.py -i $DATASET/ -m models/NRHMM/
-```
-Finally the datasets can be hybrided to make a training dataset
-```bash
-python xron/nrhmm/hybrid_data.py -c $CONTROL_DATASET/ -m $METH_DATASET/ -o $TRAIN/
+xron train -i chunks.npy --seq seqs.npy --seq_len seq_lens.npy --model_folder models/ENEYFT --load
 ```
 
-### Train a model
-
-```bash
-python xron/xron_train_supervised.py  -i $DF/chunks.npy --seq $DF/seqs.npy --seq_lens.npy $DF/seq_lens.npy -o $OUTPUT/$MODEL_NAME 
-```

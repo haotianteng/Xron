@@ -140,9 +140,7 @@ def main(args):
     np.save(os.path.join(args.input,'seq_re_lens.npy'),seq_lens[:args.max_n])
     np.save(os.path.join(args.input,'path'),paths[:args.max_n])
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description='Training RHMM model')
+def add_arguments(parser):
     parser.add_argument("-i","--input", type = str, required = True,
                         help = "Data folder contains the chunk, kmer sequence.")
     parser.add_argument('-m', '--model', required = True,
@@ -169,13 +167,19 @@ if __name__ == "__main__":
     parser.add_argument("--transition_prior",type = float, default = 0.3,
                         help = "The prior probability of transition matrix.")
     parser.add_argument("--transition_operation",type = str, default = "sparse")
-    args = parser.parse_args(sys.argv[1:])
+
+def post_args(args):
     if args.device is None:
         args.device = "cuda" if torch.cuda.is_available() else "cpu"
     if args.transition_operation == "compact":
         args.transition_type = "compact"
     else:
         args.transition_type = "sparse"
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description='Training RHMM model')
+    args = parser.parse_args(sys.argv[1:])
     main(args)
 
 
