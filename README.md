@@ -37,7 +37,7 @@ Then you can install from our pypi repository or install the newest version from
 ### Install from Source
 
 ```
-git clone https://github.com/haotianteng/Xron.git
+git clone --recursive https://github.com/haotianteng/Xron.git
 cd Xron
 python setup.py install
 ```
