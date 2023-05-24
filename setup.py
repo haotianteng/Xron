@@ -23,6 +23,8 @@ install_requires=[
   'tqdm>=4.23.0',
   'scipy>=1.0.1',
   'biopython==1.73',
+  'google-auth==2.18.1',
+  'oauthlib==3.2.2',
   'packaging>=18.0',
   'ont-fast5-api>=0.3.1',
   'wget>=3.2',
@@ -34,10 +36,10 @@ install_requires=[
   'toml',
   'fast-ctc-decode',
   'editdistance>=0.5.3',
+  'torch==1.12.0',
+  'torchvision==0.13.0',
+  'torchaudio==0.12.0'
 ]
-extras_require={
-  "pytorch": ["torch==1.12.0"],
-}
 exec(open('xron/_version.py').read()) #readount the __version__ variable
 setup(
   name = 'xron',
@@ -54,8 +56,6 @@ setup(
   classifiers = ['License :: OSI Approved :: Mozilla Public License 2.0 (MPL 2.0)'],
   install_requires=install_requires,
   entry_points={'console_scripts':['xron=xron.entry:main'],},
-  extras_require=extras_require,
-#   entry_points={'console_scripts':['chiron=chiron.entry:main'],},
   long_description=long_description,
   ext_modules = [ Extension('boostnano.hmm', sources = ['boostnano/hmm.cpp'],extra_compile_args=['-std=c++11'])],
   include_dirs = [np.get_include()],
