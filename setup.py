@@ -31,6 +31,7 @@ install_requires=[
   'matplotlib',
   'seaborn',
   'pandas',
+  'toml',
   'fast-ctc-decode',
   'editdistance>=0.5.3',
 ]
