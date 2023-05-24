@@ -362,9 +362,7 @@ def extract(args):
     with open(config_file,'w+') as f:
         toml.dump(config_dict,f)
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(prog='xron',   
-                                     description='A Unsupervised Nanopore basecaller.')
+def add_arguments(parser):
     parser.add_argument('-i', 
                         '--input_fast5', 
                         required = True,
@@ -405,7 +403,7 @@ if __name__ == "__main__":
                         type = str,
                         help="If basecall information is not found in the basecall entry, look into this alternative entry.")
     parser.add_argument('--stride',
-                        default = 10,
+                        default = 12,
                         type = int,
                         help = "The length of stride used in basecall model,\
                         for guppy RNA fast, this number is 12, for guppy RNA\
@@ -432,7 +430,8 @@ if __name__ == "__main__":
     parser.add_argument('--fix_d',action="store_true",
                         dest = "fix_d",
                         help = "Use a fix deviation to normalize the signal.")
-    FLAGS = parser.parse_args(sys.argv[1:])
+
+def post_args(FLAGS):
     XRON_CONFIG = {"stride":11,
                    "padding":True, #If we padding the position to the same length as signal.
                    "differential_signal":False,
@@ -458,6 +457,8 @@ if __name__ == "__main__":
         FLAGS.diff_sig = config["differential_signal"]
         FLAGS.padding = config['padding']
     else:
+        print("Basecaller is not defined, initialize the configuration with guppy fast model.")
+        config = config_dict["guppy_fast"]
         FLAGS.rev_move = FLAGS.move_direction
     FLAGS.config = config
     FLAGS.alphabeta = "ACGTM" if FLAGS.mode == "rna_meth" else "ACGT"
@@ -473,6 +474,13 @@ if __name__ == "__main__":
             raise ValueError("Reference genome is required when extract the \
                              sequence.")
     os.makedirs(FLAGS.output,exist_ok = True)
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(prog='xron',   
+                                     description='A Unsupervised Nanopore basecaller.')
+    add_arguments(parser)
+    FLAGS = parser.parse_args(sys.argv[1:])
+    post_args(FLAGS)
     extract(FLAGS)
 
 
