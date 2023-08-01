@@ -11,7 +11,7 @@ Built with **PyTorch** and python 3.8+
 
 m6A-aware RNA basecall one-liner:
 ```
-xron call -i <input_fast5_folder> -o <output_folder> -m models/ENEYFT
+xron call -i <input_fast5_folder> -o <output_folder> -m models/ENEYFT --boostnano
 ```
 
 ---
@@ -56,7 +56,7 @@ This will automatically download the models and put them into the *models* folde
 We provided sample code in xron-samples folder to achieve m6A-aware basecall and identify m6A site. 
 To run xron on raw fast5 files:
 ```
-xron call -i ${INPUT_FAST5} -o ${OUTPUT} -m models/ENEYFT --fast5 --beam 50 --chunk_len 4000
+xron call -i ${INPUT_FAST5} -o ${OUTPUT} -m models/ENEYFT --fast5 --beam 50 --chunk_len 2000
 ```
 
 ## Segmentation using NHMM
