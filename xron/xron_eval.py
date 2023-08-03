@@ -466,7 +466,7 @@ def main(args):
         if args.boostnano:
             print("Loading BoostNano model.")
             project_f = os.path.dirname(os.path.dirname(inspect.getfile(CSM)))
-            model_f = os.path.join(project_f,'boostbano','model')
+            model_f = os.path.join(project_f,'boostnano','model')
             boostnano_net = CSM()
             boostnano_evaluator = evaluator(boostnano_net,model_f)
     config.EVAL['overlay'] = int(args.overlay_ratio * args.chunk_len)
