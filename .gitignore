@@ -1,0 +1,4 @@
+*.pyc
+build/
+xron.egg*
+xron/models/

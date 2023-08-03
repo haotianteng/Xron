@@ -1,6 +1,7 @@
 import os
 import sys
 import h5py
+import xron
 import toml
 import torch
 import shutil
@@ -416,7 +417,19 @@ class Evaluator(object):
         for i,k in enumerate(list(self.result_collections.keys())):
             self.result_collections[k] = list(remain[i])
         self.assembly_time += timer() - start
-            
+
+def locate_model(model_f):
+    if os.path.exists(model_f):
+        return model_f
+    package_f = xron.__path__[0]
+    print(package_f)
+    if os.path.exists(os.path.join(package_f,model_f)):
+        return os.path.join(package_f,model_f)
+    if os.path.exists(os.path.join(package_f,'models',model_f)):
+        return os.path.join(package_f,'models',model_f)
+    else:
+        raise ValueError(f"Cannot find the model file at {model_f}.")
+
 def main(args):
     if args.threads:
         torch.set_num_threads(args.threads)
@@ -437,7 +450,7 @@ def main(args):
                 'diff_norm':args.diff_norm}        #Diffnorm is deprecated setting this to True will have no effect
     config = CALL_CONFIG()
     print("Construct and load the model.")
-    model_f = args.model_folder
+    model_f =locate_model(args.model_folder)
     config_old = load_config(os.path.join(model_f,"config.toml"))
     config_old.EVAL = config.EVAL #Overwrite training config.
     config_old.CTC = config.CTC
@@ -445,7 +458,7 @@ def main(args):
     if args.config:
         config = load_config(args.config)
     net = CRNN(config)
-    load(args.model_folder,net,device = args.device)
+    load(model_f,net,device = args.device)
     print("Begin basecall.")
     net.eval()
     boostnano_evaluator = None
@@ -482,7 +495,7 @@ def add_arguments(parser):
                         help = "The output folder.")
     parser.add_argument('--fast5',action = "store_true",dest = "fast5",
                         help = "If output fast5 files.")
-    parser.add_argument('--device', default = 'cuda',
+    parser.add_argument('--device', default = None,
                         help="The device used for training, can be cpu or cuda.")
     parser.add_argument('--batch_size', default = None, type = int,
                         help="Evaluation batch size, default use the maximum size of the GPU memory, batch size and memory consume relationship: 200:6.4GB, 400:11GB, 800:20GB, 1200:30GB.")
@@ -508,14 +521,26 @@ def add_arguments(parser):
 
 def post_args(args):
     MEMORY_PER_BATCH_PER_SIGNAL=15000. #B
-    if args.batch_size is None:
+    DEFAULT_BATCH_SIZE = 1200
+    if args.device is None:
         if torch.cuda.is_available():
+            args.device = "cuda:0"
             t = torch.cuda.get_device_properties(0).total_memory
-            args.batch_size = int(t/MEMORY_PER_BATCH_PER_SIGNAL/args.chunk_len//100*100)
-            print("Auto configure to use %d batch_size for a total of %.1f GB memory."%(args.batch_size,t/1024**3))
+            if args.batch_size is None:
+                args.batch_size = int(t/MEMORY_PER_BATCH_PER_SIGNAL/args.chunk_len//100*100)
+                print("Auto configure to use %d batch_size for a total of %.1f GB memory."%(args.batch_size,t/1024**3))
+            
+        elif torch.backends.mps.is_available():
+            #this is a apple m GPU
+            args.device = "mps"
+            if args.batch_size is None:
+                args.batch_size = 600
+                print("MPS backend detected, the batch_size is setting to default %d"%(args.batch_size))
         else:
-            args.batch_size = 1200
-            print("No GPU is detected, the batch_size is setting to default %d"%(args.batch_size))
+            args.device = "cpu"
+            if args.batch_size is None:
+                args.batch_size = DEFAULT_BATCH_SIZE
+                print("No GPU is detected, the batch_size is setting to default %d"%(args.batch_size))
     os.makedirs(args.output,exist_ok=True)
 
 if __name__ == "__main__":
