@@ -2,3 +2,4 @@
 build/
 xron.egg*
 xron/models/
+dist/
