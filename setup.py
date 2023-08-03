@@ -13,7 +13,7 @@ class CustomInstallCommand(install):
         install.run(self)
 
 install_requires=[
-  'h5py>=2.7.0',
+  'h5py',
   'mappy>=2.10.0',
   'numpy>=1.13.3',
   'statsmodels>=0.8.0',
@@ -35,7 +35,8 @@ install_requires=[
   'editdistance>=0.5.3',
   'torch>=1.12.0',
   'torchvision>=0.13.0',
-  'torchaudio>=0.12.0'
+  'torchaudio>=0.12.0',
+  'boostnano',
 ]
 exec(open('xron/_version.py').read()) #readount the __version__ variable
 setup(
@@ -50,7 +51,7 @@ setup(
   download_url = 'https://github.com/haotianteng/Xron/archive/1.0.0.tar.gz', 
   keywords = ['basecaller', 'nanopore', 'sequencing','neural network','RNA methylation'], 
   license="GPL 3.0",
-  classifiers = ['License :: OSI Approved :: GNU General Public License v3.0 (GPL 3.0)'],
+  classifiers = ['License :: OSI Approved :: GNU General Public License v3 (GPLv3)'],
   install_requires=install_requires,
   entry_points={'console_scripts':['xron=xron.entry:main'],},
   long_description=long_description,
