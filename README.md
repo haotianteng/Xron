@@ -1,6 +1,7 @@
 ![xron_logo](https://github.com/haotianteng/Xron/blob/master/docs/images/xron_logo.png)
-Xron (ˈkairɑn) is a basecaller inherited from [Chiron](https://github.com/haotianteng/Chiron) that could identify methylation modification in Oxford Nanopore sequencer  
+Xron (ˈkairɑn) is a methylation basecaller that could identify m6A methylation modification in Oxford Nanopore sequencer  
 Using a deep learning CNN+RNN+CTC structure to establish end-to-end basecalling for the nanopore sequencer.  
+The name is inherited from [Chiron](https://github.com/haotianteng/Chiron)
 Built with **PyTorch** and python 3.8+
 
 <!--
