@@ -33,7 +33,7 @@ install_requires=[
   'pandas',
   'toml',
   'fast-ctc-decode',
-  'editdistance>=0.5.3',
+  'editdistance==0.5.3',
 ]
 extras_require={
   "pytorch": ["torch==1.12.0"],
