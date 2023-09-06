@@ -207,7 +207,7 @@ if __name__ == "__main__":
                         help = "The k of k-mer.")
     parser.add_argument("--alphabeta", type = str, default = 'ACGTM',
                         help = "Give the order of the necleotides alphabet from 0 to n")
-    parser.add_argument("--normalization",type = str, default = "dwell",
+    parser.add_argument("--normalization",type = str, default = "noise",
                         help = "The normalization method used, can be dwell, combine or noise.")
     parser.add_argument('--max_n',
                         default = None,

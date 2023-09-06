@@ -21,11 +21,13 @@ def kmers2seq(kmers,idx2kmer):
     seqs = [idx2kmer[x][2] for x in merged]
     return ''.join(seqs)
 
+SCRATCH = os.environ['SCRATCH']
+out_f = f"{SCRATCH}/Xron_Project/figures"
 torch.manual_seed(1992)
-model = torch.load("/home/heavens/bridge_scratch/NRHMM_models/xron_rhmm_models_new/ckpt-36234")
+model = torch.load(f"{SCRATCH}/NRHMM_models/xron_rhmm_models_new/ckpt-36234")
 emission = GaussianEmissions(model['hmm']['emission.means'].cpu().numpy(), 1*np.ones(3125)[:,None])
 class TestArguments:
-    input = "/home/heavens/bridge_scratch/NA12878_RNA_IVT/xron_partial/extracted_kmers/"
+    input = f"{SCRATCH}/NA12878_RNA_IVT/xron_partial/extracted_kmers/"
     # input = "/home/heavens/bridge_scratch/m6A_Nanopore_RNA002/data/m6A_90_pct/20210430_1745_X2_FAQ15454_23428362/kmers_guppy_4000/"
     batch_size = 10
     device = "cuda"
@@ -87,6 +89,11 @@ for x,g in itertools.groupby(kmers):
 alignment = np.asarray(alignment)
 axs[1][1].plot(alignment[-1] - alignment,color = "black")
 axs[1][1].set_ylim(ymin = -0.5,ymax = alignment[-1]+0.5)
+fig.savefig(f"{out_f}/alignment1.png",dpi = 300, bbox_inches = "tight")
+# save pdf
+fig.savefig(f"{out_f}/alignment1.pdf",dpi = 300, bbox_inches = "tight",format = "pdf")
+#save eps
+fig.savefig(f"{out_f}/alignment1.eps",dpi = 300, bbox_inches = "tight",format = "eps")
 
 ## Print the Marcus suggestion
 fig,axs = plt.subplots(nrows = 2, 
@@ -116,6 +123,11 @@ axs[1][1].fill_between(x = np.arange(len(signal)),
                        y1 = -0.5,
                        y2 = alignment[-1]+0.5,
                        color = "grey")
+fig.savefig(f"{out_f}/alignment2.png",dpi = 300, bbox_inches = "tight")
+# save pdf
+fig.savefig(f"{out_f}/alignment2.pdf",dpi = 300, bbox_inches = "tight",format = "pdf")
+#save eps
+fig.savefig(f"{out_f}/alignment2.eps",dpi = 300, bbox_inches = "tight",format = "eps")
 
 ## Print the Marcus suggestion
 fig,axs = plt.subplots(nrows = 2, 
@@ -146,3 +158,8 @@ axs[1][1].fill_between(x = np.arange(len(signal)),
                        y2 = alignment + 3,
                        color = "grey")
 axs[1][1].set_ylim(ymin = -0.5,ymax = alignment[0]+0.5)
+fig.savefig(f"{out_f}/alignment3.png",dpi = 300, bbox_inches = "tight")
+# save pdf
+fig.savefig(f"{out_f}/alignment3.pdf",dpi = 300, bbox_inches = "tight",format = "pdf")
+#save eps
+fig.savefig(f"{out_f}/alignment3.eps",dpi = 300, bbox_inches = "tight",format = "eps")

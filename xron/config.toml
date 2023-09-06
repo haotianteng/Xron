@@ -1,0 +1,104 @@
+[CNN]
+N_Layer = 3
+[[CNN.Layers]]
+layer_type = "Res1d"
+kernel_size = 5
+stride = 1
+out_channels = 16
+
+[[CNN.Layers]]
+layer_type = "Res1d"
+kernel_size = 5
+stride = 1
+out_channels = 32
+
+[[CNN.Layers]]
+layer_type = "Res1d"
+kernel_size = 13
+stride = 5
+out_channels = 32
+
+[RNN]
+layer_type = "BidirectionalRNN"
+hidden_size = 32
+cell_type = "LSTM"
+num_layers = 3
+
+[FNN]
+N_Layer = 2
+[[FNN.Layers]]
+out_features = 32
+bias = true
+activation = "Sigmoid"
+
+[[FNN.Layers]]
+out_features = 6
+bias = true
+activation = "Linear"
+
+[FNN_DECODER]
+N_Layer = 1
+[[FNN_DECODER.Layers]]
+out_features = 8
+bias = true
+activation = "ReLU"
+
+[[FNN_DECODER.Layers]]
+out_features = 1
+bias = true
+activation = "Linear"
+
+[DECODER]
+X_UPSAMPLING = 5
+USE_STD = false
+
+[PORE_MODEL]
+PORE_MODEL_F = "pore_models/m6A_5mer_level.model"
+N_BASE = 5
+K = 3
+N_EMBD = 64
+EMBEDDING_SIZE = 32
+LOAD = false
+
+[CTC]
+beam_size = 5
+beam_cut_threshold = 0.05
+alphabeta = "ACGTM"
+mode = "rna"
+
+[TRAIN]
+inital_learning_rate = 0.004
+batch_size = 200
+grad_norm = 2
+epsilon = 0.1
+epsilon_decay = 0
+alpha = 1.0
+keep_record = 5
+decay = 0.99
+diff_signal = false
+
+[CNN_DECODER]
+N_Layer = 3
+Input_Shape = 32
+[[CNN_DECODER.Layers]]
+layer_type = "RevRes1d"
+kernel_size = 13
+stride = 5
+out_channels = 32
+
+[[CNN_DECODER.Layers]]
+layer_type = "RevRes1d"
+kernel_size = 5
+stride = 1
+out_channels = 32
+
+[[CNN_DECODER.Layers]]
+layer_type = "RevRes1d"
+kernel_size = 5
+stride = 1
+out_channels = 32
+
+[EMBEDDING]
+n_layers = 7
+shape = 32
+mask_cnn_ratio = 0.2
