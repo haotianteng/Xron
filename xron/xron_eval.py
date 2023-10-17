@@ -76,7 +76,7 @@ def chunk_feeder(fast5_f,config,boostnano_evaluator = None):
     if len(chunks):
         chunks += [chunks[-1]]*(batch_size - len(chunks))
         meta_info += [(None,None,None)]*(batch_size - len(chunks))
-        yield torch.from_numpy(np.stack(chunks,axis = 0)[:,None,:].astype(np.float32)).to(device),curr_meta
+        yield torch.from_numpy(np.stack(chunks,axis = 0)[:,None,:].astype(np.float32)).to(device),meta_info
 
 def qs(consensus, consensus_qs, output_standard='phred+33'):
     """
