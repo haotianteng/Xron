@@ -8,7 +8,7 @@ models.zip
 *.swp
 *.pyc
 *test*.py
-xron/.vscode
+*.vscode
 test.npy
 tmpy*
 *.png
@@ -16,3 +16,6 @@ xron/utils/all_loss
 xron/utils/nearestembd
 xron/utils/nearestembd.py
 BoostNano/
+xron.egg*
+xron/models/
+dist/
