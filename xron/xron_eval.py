@@ -490,7 +490,7 @@ def add_arguments(parser):
     parser.add_argument('-i', '--input', required = True,
                         help = "The input folder contains the fast5 files.")
     parser.add_argument('-m', '--model_folder', required = True,
-                        help = "The folder contains the model.")
+                        help = "The folder contains the model, can also be model identifier including ENEYFT, ENE, ENEHEK. Recommend to use ENEYFT model.")
     parser.add_argument('-o', '--output', required = True,
                         help = "The output folder.")
     parser.add_argument('--fast5',action = "store_true",dest = "fast5",
