@@ -32,10 +32,7 @@ install_requires=[
   'pandas',
   'toml',
   'fast-ctc-decode',
-  'editdistance>=0.5.3',
-  'torch>=1.12.0',
-  'torchvision>=0.13.0',
-  'torchaudio>=0.12.0',
+  'editdistance==0.6.1',
   'boostnano',
 ]
 exec(open('xron/_version.py').read()) #readount the __version__ variable

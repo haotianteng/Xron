@@ -35,19 +35,12 @@ conda create --name YOUR_VIRTUAL_ENVIRONMENT python=3.8
 conda activate YOUR_VIRTUAL_ENVIRONMENT
 ```
 Then you can install from our pypi repository or install the newest version from github repository.
-### Install from Source
 
-```
-git clone --recursive https://github.com/haotianteng/Xron.git
-cd Xron
-python setup.py install
-```
-You will also need to PyTorch according to your environment. PyTorch 1.12 is the version we used when developing xron, but later version is usually also good.
-
-### Install from Pypi
+### Install
 ```bash
 pip install xron
 ```
+Xron requires at least PyTorch 1.11.0 to be installed. If you have not yet installed PyTorch, install it via guide from [official repository](https://pytorch.org/get-started/locally/).
 ## Basecall
 Before running basecall using Xron, you need to download the models from our AWS s3 bucket by running **xron init**
 ```bash
