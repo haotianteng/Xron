@@ -3,6 +3,7 @@ import re
 import os
 import h5py
 import pysam
+import pickle
 import editdistance
 from Bio import motifs
 from Bio.Seq import Seq 
@@ -47,8 +48,12 @@ def exclude_unmached_read(df):
 def get_ref_idx(q,r,q_idx):
     return r[np.where(q>=q_idx)[0][0]]
 
+def get_genomics_position(contig,transcript_pos,t2g_dict):
+    entry = t2g_dict[contig][transcript_pos] # (genomic_contig, gene_id, genomic_pos)
+    return entry[0], entry[2] # (genomic_contig,genomic_pos)
+
 #Set a repository name in the system environment variable NAME
-CONFIG = "HEK293T"
+CONFIG = "AT"
 BRIDGE_FOLDER = os.environ['SCRATCH']+'/'
 if CONFIG == "Yearst":
     repo = "xron_crosslink2"
@@ -62,6 +67,7 @@ if CONFIG == "Yearst":
                             "move_forward":False,}
     motif_string = "DRACD"
     motif_A_idx = 2
+    t2g_dict = None
     BASE_F = f"{BRIDGE_FOLDER}/Xron_Project/Benchmark/Yearst"
 
 if CONFIG == "HEK293T":
@@ -126,7 +132,34 @@ if CONFIG == "HEK293T":
                             "move_forward":False,}
     motif_string = "DRACD"
     motif_A_idx = 2
+    t2g_dict = f"{BRIDGE_FOLDER}/Xron_Project/Benchmark/HEK293T/t2g_dict.pkl"
+    with open(t2g_dict,'rb') as f:
+        t2g_dict = pickle.load(t2g_dict)
 
+if CONFIG == "AT":
+    repo = "xron_eneheke1"
+    names = ["wt1_1",
+             "wt1_2",
+             "wt1_3",
+             "wt1_4",
+             "wt1_5"]
+    # names = [os.environ['NAME']]
+    #TODO change the name
+    meths = [None]*len(names)
+    BASE_F = f"{BRIDGE_FOLDER}/Xron_Project/Benchmark/AT/xron_eneheke1/"
+    sites_f = f"{BRIDGE_FOLDER}/Xron_Project/virc_test_results.csv"
+    sites = pd.read_csv(sites_f)
+    reference = f"{BRIDGE_FOLDER}/TAIR10/Arabidopsis_thaliana.TAIR10.cdna.ncrna.fa"
+    reference = pysam.FastaFile(reference)
+    segment_len = 4000
+    window_half = 4
+    xron_basecall_config = {"stride":11,
+                            "move_forward":False,}
+    motif_string = "DRACD"
+    motif_A_idx = 2
+    t2g_dict = f"{BRIDGE_FOLDER}/Xron_Project/Benchmark/AT/t2g_dict.pkl"
+    with open(t2g_dict,'rb') as f:
+        t2g_dict = pickle.load(t2g_dict)
 
 for name,meth in zip(names,meths):
     input_site_summary = f"{BASE_F}/readIDs_{repo}_{name}.csv"
@@ -180,6 +213,8 @@ for name,meth in zip(names,meths):
                     q_seq = df['query_seq'][idx]
                     q_pos = df['seq_pos'][idx]
                     reverse = df['reverse_align'][idx]
+                    if reverse:
+                        continue #Skip reverse reads to make life easier
                     bc_pos = q_pos if not reverse else len(q_seq) - q_pos
                     try:
                         start = max(signal_idx[bc_pos] - upstream,0)
@@ -204,6 +239,9 @@ for name,meth in zip(names,meths):
                         continue
                     try:
                         ref_seq = reference.fetch(df['contig'][idx],ref_start,ref_end+1)
+                        #TODO
+                        #Need to annotate modification in the reference sequence
+                        #to include the case when there are multiple modifications in the same segment
                     except ValueError as e:
                         print(e)
                         summary["Sampling sequence out of alignment bounds"] += 1
@@ -227,12 +265,24 @@ for name,meth in zip(names,meths):
                             #replace A with M at refpos to indicate the methylation
                             ref_seq = ref_seq[:refpos] + 'M' + ref_seq[refpos+1:]
                     else:
-                        entry = sites[(sites['chr'] == df['contig'][idx]) & (sites['genomic_position'] == df['refpos'][idx])]
-                        if len(entry) == 0:
+                        transcript_id = df['contig'][idx]
+                        transcript_pos = df['refpos'][idx]
+                        if t2g_dict:
+                            genomic_contig,genomic_pos = get_genomics_position(df['contig'][idx],transcript_pos,t2g_dict)
+                        else:
+                            genomic_contig,genomic_pos = transcript_id,transcript_pos
+                        genomic_pos_s = genomic_pos - refpos
+                        genomic_pos_e = genomic_pos_s + len(ref_seq)
+                        
+                        entries = sites[(sites['chr'] == genomic_contig) & (sites['genomic_position'] > genomic_pos_s) & (sites['genomic_position'] < genomic_pos_e)]
+                        if len(entries) == 0:
                             summary["Motif is missing"] += 1
                             continue
-                        if entry['modification_status'].values[0] == 1:
-                            ref_seq = ref_seq[:refpos] + 'M' + ref_seq[refpos+1:]
+                        for index,entry in entries.iterrows():
+                            if entry['modification_status'] == 1:
+                                curr_pos = entry['genomic_position'] - genomic_pos_s
+                                if ref_seq[curr_pos] == 'A':
+                                    ref_seq = ref_seq[:curr_pos] + 'M' + ref_seq[curr_pos+1:]
                     seq_lens.append(len(ref_seq))
                     seqs.append(ref_seq)
                     curr_seg = signal[start:start+segment_len]

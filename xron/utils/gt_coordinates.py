@@ -72,16 +72,76 @@ def readGTF(gtf_path_or_url):
     for ln in gtf:
         if not ln.startswith("#"):
             ln=ln.strip("\n").split("\t")
-            if ln[2] == "transcript" or ln[2] in ("exon", "start_codon", "stop_codon", "CDS", 
+            if ln[2] in ("transcript", "exon", "start_codon", "stop_codon", "CDS", "mRNA", "antisense_lncRNA",
                                                   "three_prime_utr", "five_prime_utr"):
                 chr,type,start,end=ln[0],ln[2],int(ln[3]),int(ln[4])
+                chr = chr.replace("Chr", "").replace("chr", "") # Remove the prefix "Chr" or "chr" in chromosome names.
                 attrList=ln[-1].split(";")
                 attrDict={}
                 for k in attrList:
                     p=k.strip().split(" ")
                     if len(p) == 2:
                         attrDict[p[0]]=p[1].strip('\"')
-                tx_id = attrDict["transcript_id"] + "." + attrDict["transcript_version"]
+                tx_id = attrDict["transcript_id"]
+                if "transcript_version" in attrDict:
+                    tx_id = tx_id + "." + attrDict["transcript_version"]
+                else:
+                    if len(tx_id.split('.')) == 1:
+                        tx_id = tx_id + ".1"
+                g_id = attrDict["gene_id"]
+                if g_id not in gene_transcript_dict:
+                    gene_transcript_dict[g_id] = [tx_id]
+                else:
+                    gene_transcript_dict[g_id].append(tx_id)
+                if tx_id not in dict:
+                    dict[tx_id]={'chr':chr,'g_id':g_id,'strand':ln[6]}
+                    if type not in dict[tx_id]:
+                        dict[tx_id][type]=[(start,end)]
+                else:
+                    if (type == 'CDS') and ('exon_number' in attrDict):
+                        info = (start, end, int(attrDict['exon_number']))
+                    else:
+                        info = (start, end)
+                    if type not in dict[tx_id]:
+                        dict[tx_id][type]=[info]
+                    else:
+                        dict[tx_id][type].append(info)
+                          
+    #convert genomic positions to tx positions
+    for id in dict:
+        tx_pos,tx_start=[],0
+        # print(id)
+        if 'exon' not in dict[id]:
+            if 'CDS' in dict[id]:
+                dict[id]['exon'] = dict[id]['CDS']
+            else:
+                print(f"Transcript {id} does not have exon information.")
+                continue
+        for pair in dict[id]["exon"]:
+            tx_end=pair[1]-pair[0]+tx_start
+            tx_pos.append((tx_start,tx_end))
+            tx_start=tx_end+1
+        dict[id]['tx_exon']=tx_pos
+    return dict,gene_transcript_dict
+
+def readGFF3(gff3_path_or_url):
+    gtf=open(gff3_path_or_url,"r")
+    dict={}
+    gene_transcript_dict={}
+    for ln in gtf:
+        if not ln.startswith("#"):
+            ln=ln.strip("\n").split("\t")
+            if ln[2] in ("transcript", "exon", "start_codon", "stop_codon", "CDS", 
+                                                  "three_prime_utr", "five_prime_utr"):
+                chr,type,start,end=ln[0],ln[2],int(ln[3]),int(ln[4])
+                chr = chr.replace("Chr", "").replace("chr", "") # Remove the prefix "Chr" or "chr" in chromosome names.
+                attrList=ln[-1].split(";")
+                attrDict={}
+                for k in attrList:
+                    p=k.strip().split("=")
+                    if len(p) == 2:
+                        attrDict[p[0]]=p[1]
+                tx_id = attrDict["ID"].split(':')[1]
                 g_id = attrDict["gene_id"]
                 if g_id not in gene_transcript_dict:
                     gene_transcript_dict[g_id] = [tx_id]
@@ -93,10 +153,7 @@ def readGTF(gtf_path_or_url):
                         if type == "transcript":
                             dict[tx_id][type]=(start,end)
                 else:
-                    if type == 'CDS':
-                        info = (start, end, int(attrDict['exon_number']))
-                    else:
-                        info = (start, end)
+                    info = (start, end)
                     if type not in dict[tx_id]:
                         dict[tx_id][type]=[info]
                     else:
@@ -147,16 +204,53 @@ if __name__ == "__main__":
     gtf_f = os.path.join(ref_folder,'Homo_sapiens.GRCh38.91.gtf')
     sites_f = f"{SCRATCH}/Xron_Project/m6A_site_m6Anet_DRACH_HEK293T.csv"
 
-    #%%Test case 1:
-    #Build t2g dictionary for human reference from SG-NEX data
-    out_f = f"{SCRATCH}/Xron_Project/Benchmark/HEK293T/t2g_dict.pkl"
-    print("Reading reference fasta files...")   
+    # #%%Test case 1:
+    # #Build t2g dictionary for human reference from SG-NEX data
+    # out_f = f"{SCRATCH}/Xron_Project/Benchmark/HEK293T/t2g_dict.pkl"
+    # print("Reading reference fasta files...")   
+    # fasta = readFasta(trascript_f)
+    # print("Reading reference gtf files...")
+    # gtf,id_map = readGTF(gtf_f)
+    # print("Reading transcript names...")
+    # df = pd.read_csv(sites_f)
+    # gene_ids = df['gene_id'].unique()
+    # tx_names = [id_map[gene_id] for gene_id in gene_ids if gene_id in id_map]
+    # tx_names = list(chain(*tx_names)) #flatten the list
+    # print("Creating t2g dictionary...")
+    # t2g_dict = {tx:t2g(tx, fasta, gtf) for tx in tx_names}
+    # print("Saving t2g dictionary...")
+    # with open(out_f, "wb+") as f:
+    #     pickle.dump(t2g_dict, f)
+
+    # #%%Test case 2:
+    # #Build reverse g2t dictionary for human reference 
+    # t2g_f = f"{SCRATCH}/Xron_Project/Benchmark/HEK293T/t2g_dict.pkl"
+    # out_f = f"{SCRATCH}/Xron_Project/Benchmark/HEK293T/g2t_dict.pkl"
+    # print("Reading the t2g dictionary...")
+    # if not os.path.exists(t2g_f):
+    #     print("t2g dictionary not found. Please run the first test case first.")
+    #     exit(1)
+    # with open(t2g_f, "rb") as f:
+    #     t2g_dict = pickle.load(f)
+    # print("Creating g2t dictionary...")
+    # g2t_dict = reverse_mapping(t2g_dict)
+    # print("Saving g2t dictionary...")
+    # with open(out_f, "wb+") as f:
+    #     pickle.dump(g2t_dict, f)
+    
+    # %%Test case 3:
+    #Build g2t dictionary for Arabidopsis thaliana (AT) reference
+    out_f = f"{SCRATCH}/Xron_Project/Benchmark/AT/t2g_dict.pkl"
+    print("Reading reference fasta files...")
+    ref_folder = os.path.join(SCRATCH, 'TAIR10')
+    trascript_f = os.path.join(ref_folder,'Arabidopsis_thaliana.TAIR10.cdna.ncrna.fa')
     fasta = readFasta(trascript_f)
     print("Reading reference gtf files...")
+    gtf_f = os.path.join(ref_folder,'Araport11_GTF_genes_transposons.20240331.gtf')
     gtf,id_map = readGTF(gtf_f)
     print("Reading transcript names...")
-    df = pd.read_csv(sites_f)
-    gene_ids = df['gene_id'].unique()
+    df = pd.read_csv(f"{SCRATCH}/Xron_Project/virc_test_results.csv")
+    gene_ids = df['gene_id'].astype(str).unique()
     tx_names = [id_map[gene_id] for gene_id in gene_ids if gene_id in id_map]
     tx_names = list(chain(*tx_names)) #flatten the list
     print("Creating t2g dictionary...")
@@ -165,10 +259,11 @@ if __name__ == "__main__":
     with open(out_f, "wb+") as f:
         pickle.dump(t2g_dict, f)
 
-    #%%Test case 2:
-    #Build reverse g2t dictionary for human reference 
-    t2g_f = f"{SCRATCH}/Xron_Project/Benchmark/HEK293T/t2g_dict.pkl"
-    out_f = f"{SCRATCH}/Xron_Project/Benchmark/HEK293T/g2t_dict.pkl"
+
+    # %% Test case 4:
+    # Build g2t dictionary for Arabidopsis thaliana (AT) reference
+    t2g_f = f"{SCRATCH}/Xron_Project/Benchmark/AT/t2g_dict.pkl"
+    out_f = f"{SCRATCH}/Xron_Project/Benchmark/AT/g2t_dict.pkl"
     print("Reading the t2g dictionary...")
     if not os.path.exists(t2g_f):
         print("t2g dictionary not found. Please run the first test case first.")
@@ -180,5 +275,6 @@ if __name__ == "__main__":
     print("Saving g2t dictionary...")
     with open(out_f, "wb+") as f:
         pickle.dump(g2t_dict, f)
-    
+        
+
 # %%

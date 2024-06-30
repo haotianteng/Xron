@@ -6,8 +6,10 @@ Created on Mon Apr 19 13:59:01 2021
 from numpy import ndarray
 import os
 import h5py
+import pod5
 import itertools
 import numpy as np
+from pathlib import Path
 from tqdm import tqdm
 from typing import List
 import contextlib
@@ -106,6 +108,26 @@ class NullContextManager(object):
         return self.dummy_resource
     def __exit__(self, *args):
         pass
+
+def pod5_iter(pod5_file, mode = 'r', tqdm_bar = False):
+    fail_count = 0
+    with tqdm() if tqdm_bar else NullContextManager() as t:
+        with pod5.DatasetReader(Path(pod5_file)) as dataset:
+            for read_record in dataset.reads():
+                try:
+                    signal = read_record.signal.astype(np.float32)
+                    read_id = read_record.read_id
+                    if tqdm_bar:
+                        t.postfix = "Read: %s, failed: %d"%(read_id,fail_count)
+                        t.update()
+                    yield read_record,signal,read_id
+                except Exception as e:
+                    print("Reading %s failed due to %s."%(read_id,e))
+                    fail_count += 1
+                    if tqdm_bar:
+                        t.postfix = "Read: %s, failed: %d"%(read_id,fail_count)
+                        t.update()
+                    continue
 
 def fast5_shallow_iter(fast5_dir,mode = 'r',tqdm_bar = False):
     fail_count = 0
