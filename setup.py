@@ -1,28 +1,27 @@
 from setuptools import setup,find_packages,Extension
+from setuptools.command.install import install
 import numpy as np
 import os
 # read the contents of your README file
 with open('README.md') as f:
     long_description = f.read()
 print(long_description)
-
-print("""
-*******************************************************************
-This Source Code Form is subject to the terms of the Mozilla Public
-License, v. 2.0. If a copy of the MPL was not distributed with this
-file, You can obtain one at http://mozilla.org/MPL/2.0/.
-(c) 2023 Haotian Teng
-*******************************************************************
-""")
+class CustomInstallCommand(install):
+    def run(self):
+        print("\nThis package is licensed under the GNU General Public License v3.0 (GPLv3).")
+        print("Please refer to the LICENSE file for more information.\n")
+        install.run(self)
 
 install_requires=[
-  'h5py>=2.7.0',
+  'h5py',
   'mappy>=2.10.0',
   'numpy>=1.13.3',
   'statsmodels>=0.8.0',
   'tqdm>=4.23.0',
   'scipy>=1.0.1',
   'biopython==1.73',
+  'google-auth==2.18.1',
+  'oauthlib==3.2.2',
   'packaging>=18.0',
   'ont-fast5-api>=0.3.1',
   'wget>=3.2',
@@ -33,11 +32,16 @@ install_requires=[
   'pandas',
   'toml',
   'fast-ctc-decode',
+<<<<<<< HEAD
   'editdistance==0.5.3',
+=======
+  'editdistance>=0.5.3',
+  'torch>=1.12.0',
+  'torchvision>=0.13.0',
+  'torchaudio>=0.12.0',
+  'boostnano',
+>>>>>>> b924df4144cb55669a557439779d0fafa8dc8618
 ]
-extras_require={
-  "pytorch": ["torch==1.12.0"],
-}
 exec(open('xron/_version.py').read()) #readount the __version__ variable
 setup(
   name = 'xron',
@@ -49,15 +53,12 @@ setup(
   author_email = 'havens.teng@gmail.com',
   url = 'https://github.com/haotianteng/Xron', 
   download_url = 'https://github.com/haotianteng/Xron/archive/1.0.0.tar.gz', 
-  keywords = ['basecaller', 'nanopore', 'sequencing','neural network'], 
-  license="MPL 2.0",
-  classifiers = ['License :: OSI Approved :: Mozilla Public License 2.0 (MPL 2.0)'],
+  keywords = ['basecaller', 'nanopore', 'sequencing','neural network','RNA methylation'], 
+  license="GPL 3.0",
+  classifiers = ['License :: OSI Approved :: GNU General Public License v3 (GPLv3)'],
   install_requires=install_requires,
   entry_points={'console_scripts':['xron=xron.entry:main'],},
-  extras_require=extras_require,
-#   entry_points={'console_scripts':['chiron=chiron.entry:main'],},
   long_description=long_description,
-  ext_modules = [ Extension('boostnano.hmm', sources = ['boostnano/hmm.cpp'],extra_compile_args=['-std=c++11'])],
   include_dirs = [np.get_include()],
   long_description_content_type='text/markdown',
 )

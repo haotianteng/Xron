@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 models/
 xron-samples/
 xron.egg-info/
@@ -16,3 +17,10 @@ xron/utils/all_loss
 xron/utils/nearestembd
 xron/utils/nearestembd.py
 BoostNano/
+=======
+*.pyc
+build/
+xron.egg*
+xron/models/
+dist/
+>>>>>>> b924df4144cb55669a557439779d0fafa8dc8618

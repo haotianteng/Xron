@@ -4,3 +4,4 @@ ont-fast5-api
 pandas
 fast-ctc-decode
 editdistance==0.5.3
+boostnano
