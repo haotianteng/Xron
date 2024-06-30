@@ -33,6 +33,7 @@ install_requires=[
   'toml',
   'fast-ctc-decode',
 <<<<<<< HEAD
+<<<<<<< HEAD
   'editdistance==0.5.3',
 =======
   'editdistance>=0.5.3',
@@ -41,6 +42,10 @@ install_requires=[
   'torchaudio>=0.12.0',
   'boostnano',
 >>>>>>> b924df4144cb55669a557439779d0fafa8dc8618
+=======
+  'editdistance==0.6.1',
+  'boostnano',
+>>>>>>> bf714bc3464ebc9056e01798bbb3cbf83b23f216
 ]
 exec(open('xron/_version.py').read()) #readount the __version__ variable
 setup(

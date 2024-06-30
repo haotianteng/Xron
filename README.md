@@ -4,11 +4,10 @@ Using a deep learning CNN+RNN+CTC structure to establish end-to-end basecalling 
 The name is inherited from [Chiron](https://github.com/haotianteng/Chiron)
 Built with **PyTorch** and python 3.8+
 
-<!--
-%If you found Xron useful, please consider to cite:  
-%Cite paper need to be released
--->
+If you found Xron useful, please consider to cite:  
+> Teng, H., Stoiber, M., Bar-Joseph, Z. and Kingsford, C., 2024. [Detecting m6A RNA modification from nanopore sequencing using a semi-supervised learning framework.](https://www.biorxiv.org/content/10.1101/2024.01.06.574484v1.full.pdf) bioRxiv, pp.2024-01. 
 
+If you encounter any issue during using Xron, please submit an issue in the repository.
 
 m6A-aware RNA basecall one-liner:
 ```
@@ -35,19 +34,12 @@ conda create --name YOUR_VIRTUAL_ENVIRONMENT python=3.8
 conda activate YOUR_VIRTUAL_ENVIRONMENT
 ```
 Then you can install from our pypi repository or install the newest version from github repository.
-### Install from Source
 
-```
-git clone --recursive https://github.com/haotianteng/Xron.git
-cd Xron
-python setup.py install
-```
-You will also need to PyTorch according to your environment. PyTorch 1.12 is the version we used when developing xron, but later version is usually also good.
-
-### Install from Pypi
+### Install
 ```bash
 pip install xron
 ```
+Xron requires at least PyTorch 1.11.0 to be installed. If you have not yet installed PyTorch, install it via guide from [official repository](https://pytorch.org/get-started/locally/).
 ## Basecall
 Before running basecall using Xron, you need to download the models from our AWS s3 bucket by running **xron init**
 ```bash

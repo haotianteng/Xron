@@ -77,7 +77,7 @@ def chunk_feeder(fast5_f,config,boostnano_evaluator = None):
     if len(chunks):
         chunks += [chunks[-1]]*(batch_size - len(chunks))
         meta_info += [(None,None,None)]*(batch_size - len(chunks))
-        yield torch.from_numpy(np.stack(chunks,axis = 0)[:,None,:].astype(np.float32)).to(device),curr_meta
+        yield torch.from_numpy(np.stack(chunks,axis = 0)[:,None,:].astype(np.float32)).to(device),meta_info
 
 def qs(consensus, consensus_qs, output_standard='phred+33'):
     """
@@ -490,7 +490,7 @@ def add_arguments(parser):
     parser.add_argument('-i', '--input', required = True,
                         help = "The input folder contains the fast5 files.")
     parser.add_argument('-m', '--model_folder', required = True,
-                        help = "The folder contains the model.")
+                        help = "The folder contains the model, can also be model identifier including ENEYFT, ENE, ENEHEK. Recommend to use ENEYFT model.")
     parser.add_argument('-o', '--output', required = True,
                         help = "The output folder.")
     parser.add_argument('--fast5',action = "store_true",dest = "fast5",
