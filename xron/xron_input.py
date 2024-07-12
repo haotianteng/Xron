@@ -99,7 +99,7 @@ class NumIndex(object):
     def __call__(self,sample:Dict):
         seq = list(sample['seq'])
         seq = [self.alphabet_dict[x] for x in seq]
-        seq = np.array(seq,dtype = np.long)
+        seq = np.array(seq,dtype = np.int64)
         return {key:value if key != 'seq' else seq for key, value in sample.items()}
 
 class ToTensor(object):
