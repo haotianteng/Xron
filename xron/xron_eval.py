@@ -4,6 +4,7 @@ import h5py
 import xron
 import toml
 import torch
+import pysam
 import shutil
 import inspect
 import argparse
@@ -13,11 +14,21 @@ from datetime import datetime
 from itertools import groupby 
 from functools import partial
 from fast_ctc_decode import beam_search
+from torchaudio.functional import forced_align
+from torchaudio.models.decoder import ctc_decoder
 from boostnano.boostnano_model import CSM
 from boostnano.boostnano_eval import evaluator
+import xron._version
 from xron.xron_model import CRNN, CONFIG
 from xron.xron_train_base import load_config
-from xron.utils.seq_op import raw2seq,fast5_iter,norm_by_noisiest_section,med_normalization,list2string
+from xron.utils.decode import viterbi_decode,beam_search
+from xron.utils.seq_op import  {raw2seq,
+                                fast5_iter,
+                                pod5_iter,
+                                norm_by_noisiest_section,
+                                med_normalization,
+                                list2string,
+                                get_modification_tag}
 from xron.utils.easy_assembler import simple_assembly_qs
 
 
@@ -37,12 +48,16 @@ def load(model_folder,net,device = 'cuda'):
         net.load_state_dict(ckpt)
     net.to(device)
 
-def chunk_feeder(fast5_f,config,boostnano_evaluator = None):
-    iterator = fast5_iter(fast5_f,tqdm_bar = True)
+def chunk_feeder(input_f,config,boostnano_evaluator = None):
     e = config.EVAL
+    dtype = torch.bfloat16 if e['amp'] else torch.float32
+    if e['input_format'] == "fast5":
+        iterator = fast5_iter(input_f,tqdm_bar = True)
+    elif e['input_format'] == "pod5":
+        iterator = pod5_iter(input_f,tqdm_bar = True)
     batch_size,chunk_len,device,offset,overlay = e['batch_size'],e['chunk_len'],e['device'],e['offset'],e['overlay']
     chunks,meta_info = [],[]
-    for read_h,signal,fast5_f,read_id in iterator:
+    for _,signal,data_f,read_id in iterator:
         read_len = len(signal)
         if e['mode'] == 'rna' or e['mode'] == 'rna-meth':
             if boostnano_evaluator is None:
@@ -66,18 +81,18 @@ def chunk_feeder(fast5_f,config,boostnano_evaluator = None):
         last_chunk_len = len(last_chunk)
         current_chunks[-1]= np.pad(last_chunk,(0,chunk_len-last_chunk_len),'constant',constant_values = (0,0))
         chunks += current_chunks
-        meta_info += [(fast5_f,read_id,chunk_len)]*(len(current_chunks)-1) 
-        meta_info += [(fast5_f,read_id,last_chunk_len)]
+        meta_info += [(data_f,read_id,chunk_len)]*(len(current_chunks)-1) 
+        meta_info += [(data_f,read_id,last_chunk_len)]
         while len(chunks) >= batch_size:
             curr_chunks = chunks[:batch_size]
             curr_meta = meta_info[:batch_size]
-            yield torch.from_numpy(np.stack(curr_chunks,axis = 0)[:,None,:].astype(np.float32)).to(device),curr_meta
+            yield torch.from_numpy(np.stack(curr_chunks,axis = 0)[:,None,:]).to(dtype).to(device),curr_meta
             chunks = chunks[batch_size:]
             meta_info = meta_info[batch_size:]
     if len(chunks):
         chunks += [chunks[-1]]*(batch_size - len(chunks))
         meta_info += [(None,None,None)]*(batch_size - len(chunks))
-        yield torch.from_numpy(np.stack(chunks,axis = 0)[:,None,:].astype(np.float32)).to(device),meta_info
+        yield torch.from_numpy(np.stack(chunks,axis = 0)[:,None,:]).to(dtype).to(device),meta_info
 
 def qs(consensus, consensus_qs, output_standard='phred+33'):
     """
@@ -96,33 +111,16 @@ def qs(consensus, consensus_qs, output_standard='phred+33'):
     L = consensus.shape[1]
     sorted_consensus = consensus[sort_ind, np.arange(L)[np.newaxis, :]]
     sorted_consensus_qs = consensus_qs[sort_ind, np.arange(L)[np.newaxis, :]]
-    quality_score = 10 * (np.log10((sorted_consensus[-1, :] + 1) / (
-        sorted_consensus[-2, :] + 1))) + sorted_consensus_qs[-1, :] / sorted_consensus[-1, :] / np.log(10)
+    # quality_score = 10 * (np.log10((sorted_consensus[-1, :] + 1) / (
+        # sorted_consensus[-2, :] + 1))) + sorted_consensus_qs[-1, :] / sorted_consensus[-1, :] / np.log(10)
+    average_qc = sorted_consensus_qs[-1, :] / sorted_consensus[-1, :] / np.log(10)
+    qc = -10*average_qc
+    print(qc)
     if output_standard == 'number':
-        return quality_score.astype(int)
+        return qc.astype(int)
     elif output_standard == 'phred+33':
-        q_string = [chr(x + 33) for x in quality_score.astype(int)]
+        q_string = [chr(x + 33) for x in qc.astype(int)]
         return ''.join(q_string)
-
-def viterbi_decode(logits:torch.tensor):
-    """
-    Viterbi decdoing algorithm
-
-    Parameters
-    ----------
-    logits : torch.tensor
-        Shape L-N-C
-
-    Returns
-    -------
-        sequence: A length N list contains final decoded sequence.
-        moves: A length N list contains the moves array.
-
-    """
-    sequence = np.argmax(logits,axis = 2)
-    sequence = sequence.T #L,N -> N,L
-    sequence,moves = raw2seq(sequence)
-    return sequence,list(moves.astype(int))
 
 def consensus_call(seqs,assembly_func,metas,moves,qcs,strides,hiddens = None, logits = None,jump_ratio = None):
     if hiddens:
@@ -163,14 +161,25 @@ class Writer(object):
         self.count = 0
         self.config = config
         self.base_dict = {i:b for i,b, in enumerate(config.CTC['alphabeta'])}
+        self.mod_code = config.EVAL['modification_code']
+        if self.mod_code:
+            self.canonical_base = self.mod_code.split('+')[0]
         self.prefix = write_dest
         self.prefix_fastq = os.path.join(self.prefix,'fastqs')
         os.makedirs(self.prefix_fastq,exist_ok = True)
         self.prefix_fast5 = os.path.join(self.prefix,'fast5s')
+        self.prefix_bam = os.path.join(self.prefix,'bams')
         self.seq_batch = config.EVAL['seq_batch']
         self.format = config.EVAL['format']
         if self.format == "fast5":
             os.makedirs(self.prefix_fast5,exist_ok = True)
+        if self.format == "bam":
+            os.makedirs(self.prefix_bam,exist_ok = True)
+            header = {'HD': {'VN': '1.5'}, 
+                      'PG': {'ID': 'basecaller', 'PN': 'xron', 'VN': xron._version.__version__}, 'CL': " ".join(sys.argv),
+                      'PG': {'ID': "aligner", 'PN': 'minimap2', 'VN': '2.17-r941'}}
+            #get current command line
+            self.bam_f = pysam.AlignmentFile(f"{self.prefix_bam}/out.bam", "wb",header = header)
         self.stride = config.CNN['Layers'][-1]['stride']
         self.chunk_length = config.EVAL['chunk_len']
         
@@ -199,6 +208,9 @@ class Writer(object):
         if self.format == "fast5":
             self.write_fastq("%s/%d.fastq"%(self.prefix_fastq,self.count))
             self.write_fast5(self.prefix_fast5)
+        if self.format == "bam":
+            self.write_fastq("%s/%d.fastq"%(self.prefix_fastq,self.count))
+            self.write_bam(f"{self.prefix_bam}/out.bam")
         self.count += 1
         self.css_seqs = []
         self.read_ids = []
@@ -256,6 +268,20 @@ class Writer(object):
             for seq,name,q in zip(self.css_seqs,self.read_ids,self.qs):
                 f.write("@%s\n%s\n+\n%s\n"%(name,seq,q))
     
+    def write_bam(self,output_f):
+        #TODO: finish the bam writer
+        raise NotImplementedError
+        for seq,name,fast5,q,move,hidden,logits in zip(self.css_seqs,self.read_ids,self.fast5_fs,self.qs,self.moves,self.hiddens,self.logits):
+            read = pysam.AlignedSegment()
+            read.query_name = name
+            seq,mm_str = get_modification_tag(seq,q,mod_code = self.mod_code)
+            read.query_sequence = seq
+            seq = seq.encode()
+            read.query_name = name
+            read.query_sequence = seq
+            read.query_qualities = q
+            self.bam_f.write(read)
+
     def write_config(self,output_f):
         out_config = {"CTC":self.config.CTC,"EVAL":self.config.EVAL}
         config_f = os.path.join(output_f,'config.toml')
@@ -286,6 +312,7 @@ class Evaluator(object):
 
         """
         self.net = net
+        # self.compiled = torch.compile(net)
         self.config = config
         self.result_collections = {'seqs':[],'metas':[],'moves':[],'qcs':[]}
         if config.EVAL['format'] == 'fast5':
@@ -301,6 +328,12 @@ class Evaluator(object):
         self.assembly_time, self.nn_time, self.writing_time = 0.,0.,0.
         self.writer = writer
         self.assembly_func = assembly_function
+        self.beam_search_decoder = ctc_decoder(lexicon = None,
+                                        tokens = list("N"+self.config.CTC["alphabeta"]),
+                                        beam_size = self.config.CTC["beam"],
+                                        blank_token = 'N',
+                                        sil_token = 'N',
+                                        nbest = 1)
     
     @property
     def seqs(self):
@@ -346,7 +379,11 @@ class Evaluator(object):
     @_timeit
     def run_nn(self,batch):
         start = timer()
-        self.curr_logits = self.net(batch).cpu().numpy() #TODO send the logits into a queue to enable multi-threading
+        if self.config.EVAL['amp']:
+            with torch.autocast(device_type=self.config.EVAL['device'], dtype=torch.bfloat16):
+                self.curr_logits = self.net(batch).cpu().numpy() #TODO send the logits into a queue to enable multi-threading
+        else:
+            self.curr_logits = self.net(batch).cpu().numpy()
         self.nn_time += timer() - start
     
     def beam_decode(self,posteriors):
@@ -363,22 +400,36 @@ class Evaluator(object):
             seqs.append([self.config.CTC["alphabeta"].index(x) for x in seq])
         return seqs,move
     
+    def beam_decode_prob(self,posteriors,sig_len):
+        L,N,C = posteriors.shape
+        seqs,moves,probs = beam_search(self.beam_search_decoder, torch.tensor(posteriors), torch.tensor(sig_len).to(int), return_path = True)
+        seqs =[x[0] for x in seqs]
+        moves = [x[0] for x in moves]
+        probs = [x[0] for x in probs] #squeeze the second dimension where nbest = 1
+        return seqs,moves,probs
+
     def run_once(self,batch,meta):
         self.run_nn(batch)
+        sig_len = torch.tensor([x[2] for x in meta]).to(int)//self.net.stride
         start = timer()
         if self.config.CTC["beam"] <= 1:
             sequence,move = viterbi_decode(self.curr_logits)
-        else:
+        elif self.config.EVAL['beam_decoder_mode'] == "fast":
             sequence,move = self.beam_decode(self.curr_logits)
-        self.result_collections['qcs'] += list(np.max(self.curr_logits,axis = 2).T)
+        else:
+            sequence,move,path_logits = self.beam_decode_prob(self.curr_logits, sig_len)
         self.result_collections['seqs'] += sequence
         self.result_collections['metas'] += meta
         self.result_collections['moves'] += move
+        if self.config.CTC["beam"]<=1 or self.config.EVAL['beam_decoder_mode'] == 'fast':
+            self.result_collections['qcs'] += list(np.max(self.curr_logits,axis = 2).T)
+        else:
+            self.result_collections['qcs'] += path_logits
         if self.config.EVAL['format'] == 'fast5':
             self.result_collections['hiddens'] += list(self.activation['fnn1_out_linear'])
             self.result_collections['logits'] += list(np.transpose(self.curr_logits,(1,0,2)))
         self.assembly_time += timer() - start
-        self._call()
+        # self._call()
     
     def _call(self):
         if (None,None,None) in self.metas:
@@ -445,7 +496,12 @@ def main(args):
                 'assembly_method':args.assembly_method,
                 'seq_batch':4000,
                 'mode':'rna',
+                "modificaion_code": "A+a",
+                'input_format':args.input_format,
                 'format':'fast5' if args.fast5 else 'fastq',
+                'beam_decoder_mode':"prob",
+                'bam':args.bam,
+                'amp':args.amp, 
                 'offset':args.offset,
                 'diff_norm':args.diff_norm}        #Diffnorm is deprecated setting this to True will have no effect
     config = CALL_CONFIG()
@@ -461,6 +517,8 @@ def main(args):
     load(model_f,net,device = args.device)
     print("Begin basecall.")
     net.eval()
+    if args.amp:
+        net.to(torch.bfloat16)
     boostnano_evaluator = None
     if config.EVAL['mode'] == 'rna' or config.EVAL['mode'] == 'rna-meth':
         if args.boostnano:
@@ -488,13 +546,19 @@ def main(args):
 
 def add_arguments(parser):
     parser.add_argument('-i', '--input', required = True,
-                        help = "The input folder contains the fast5 files.")
+                        help = "The input folder contains the fast5/pod5 files.")
     parser.add_argument('-m', '--model_folder', required = True,
                         help = "The folder contains the model, can also be model identifier including ENEYFT, ENE, ENEHEK. Recommend to use ENEYFT model.")
     parser.add_argument('-o', '--output', required = True,
                         help = "The output folder.")
+    parser.add_argument('--input_format', default = "pod5",
+                        help = "The input file format, defautl is pod5 file, can be fast5.")
     parser.add_argument('--fast5',action = "store_true",dest = "fast5",
                         help = "If output fast5 files.")
+    parser.add_argument('--bam', action = "store_true",dest = "bam",
+                        help = "If output bam files.")
+    parser.add_argument('--no_amp', action = "store_false",dest = "amp",
+                        help = "Turn off the AMP mode if the GPU is not supporting bfloat16.")
     parser.add_argument('--device', default = None,
                         help="The device used for training, can be cpu or cuda.")
     parser.add_argument('--batch_size', default = None, type = int,
@@ -522,9 +586,11 @@ def add_arguments(parser):
 def post_args(args):
     MEMORY_PER_BATCH_PER_SIGNAL=15000. #B
     DEFAULT_BATCH_SIZE = 1200
+    if args.fast5 and args.input_format != "fast5":
+        raise ValueError(f"Output fast5 files require the input format to be fast5 instead of {args.input_format}.")
     if args.device is None:
         if torch.cuda.is_available():
-            args.device = "cuda:0"
+            args.device = "cuda"
             t = torch.cuda.get_device_properties(0).total_memory
             if args.batch_size is None:
                 args.batch_size = int(t/MEMORY_PER_BATCH_PER_SIGNAL/args.chunk_len//100*100)
@@ -547,6 +613,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description='Call a xron model on dataset.')
     add_arguments(parser)
+    print(" ".join(sys.argv))
     args = parser.parse_args(sys.argv[1:])
     post_args(args)
     main(args)
