@@ -41,7 +41,6 @@ def export(args):
     prepare_chunk.post_args(args)
     prepare_chunk.extract(args)
 
-@check_init(check_model)
 def train(args):
     xron_train_supervised.post_args(args)
     xron_train_supervised.main(args)
