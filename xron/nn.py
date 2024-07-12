@@ -54,7 +54,10 @@ class Res1d(nn.Module):
                                   stride = stride,
                                   kernel_size = stride)
         
-        self.conv1 = Conv1dk1(in_channels, out_channels,stride=1)
+        self.conv1 = nn.Conv1d(in_channels, 
+                               out_channels,
+                               stride=1,
+                               kernel_size=1)
         self.bn1 = batch_norm(out_channels)
         self.conv2 = nn.Conv1d(out_channels, 
                                out_channels, 
@@ -65,21 +68,33 @@ class Res1d(nn.Module):
         self.activation = activation(inplace = True)
         
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x0 = self.self_map(x)
-        out = self.conv1(x)
+        x0 = self.self_map(x) #[N,C,L]
+        out = self.conv1(x) #[N,C,L]
+        dtype = x.dtype
         if isinstance(self.bn1,nn.LayerNorm):
-            out = self.bn1(out.permute(0,2,1)).permute(0,2,1)
+            # Notice the use of nn.LayerNorm will make bfloat16 training/inference unstable due to this issue:
+            # https://github.com/pytorch/pytorch/issues/66707
+            # Autocast will make the output from LayerNorm to float32, which will cause
+            # problem in downstream rnn operations, need to manually change it back in the 
+            # last CNN layer output (potentiall every layer of CNN cause other wise the 
+            # Resnet layer will calculate in FP32)
+            # Consider using Apex Fused LayerNorm for bfloat16 training:
+            # https://nvidia.github.io/apex/layernorm.html
+            out = out.to(torch.float32)
+            out = self.bn1(out.permute(0,2,1).contiguous()).permute(0,2,1).contiguous() #[N,C,L]
+            out = out.to(dtype)
         else:
             out = self.bn1(out)
         out = self.activation(out)
         out = self.conv2(out)
         if isinstance(self.bn2,nn.LayerNorm):
-            out = self.bn2(out.permute(0,2,1)).permute(0,2,1)
+            out = out.to(torch.float32)
+            out = self.bn2(out.permute(0,2,1).contiguous()).permute(0,2,1).contiguous()
+            out = out.to(dtype)
         else:
             out = self.bn2(out)
         out = self.activation(out)
-        out += x0
-        return out
+        return out + x0
 
 class RevRes1d(nn.Module):
     def __init__(self, 
@@ -106,7 +121,6 @@ class RevRes1d(nn.Module):
         
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x0 = self.self_map(x)
-        
         out = self.conv1(x)
         out = self.bn1(out)
         out = self.activation(out)
@@ -127,8 +141,9 @@ class BidirectionalRNN(nn.Module):
         self.rnn = cell(input_size,hidden_size,num_layers,bidirectional = True)
         self.num_layers = num_layers
         self.hidden_size = hidden_size
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        output,(hn,cn) = self.rnn(x)
+        output,_ = self.rnn(x)
         return output
 
 class Permute(nn.Module):
@@ -136,4 +151,4 @@ class Permute(nn.Module):
         super().__init__()
         self.perm = perm
     def forward(self,x:torch.Tensor):
-        return x.permute(self.perm)
+        return x.permute(self.perm).contiguous()
