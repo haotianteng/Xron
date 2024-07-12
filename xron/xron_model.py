@@ -8,7 +8,7 @@ import torch
 import xron.nn
 import pandas as pd
 from copy import deepcopy
-from functools import partial
+from functools import partial,reduce
 from itertools import permutations
 from fast_ctc_decode import beam_search, viterbi_search
 from numpy.random import default_rng
@@ -34,11 +34,14 @@ PORE_MODEL_F = "pore_models/m6A_5mer_level.model"
 N_BASE = 5 #AGCTM
 EMBEDDING_SIZE = 128
 CNN_KERNAL_COMP= 25
-CNN_STRIDE = 11
+CNN_STRIDE = 5
 class CNN_CONFIG(object):   
     CNN = {'N_Layer':3,
            'Layers': [{'layer_type':'Res1d','kernel_size':5,'stride':1,'out_channels':16},
                       {'layer_type':'Res1d','kernel_size':5,'stride':1,'out_channels':32},
+                    #   {'layer_type':'Res1d','kernel_size':13,'stride':1,'out_channels':64},
+                    #   {'layer_type':'Res1d','kernel_size':13,'stride':1,'out_channels':64},
+                    #   {'layer_type':'Res1d','kernel_size':13,'stride':1,'out_channels':64},
                       # {'layer_type':'Conformer','num_attention_heads':4,'ffn_dim':64,'depthwise_conv_kernel_size':7},
                       # {'layer_type':'Conformer','num_attention_heads':4,'ffn_dim':64,'depthwise_conv_kernel_size':7},
                       # {'layer_type':'Conformer','num_attention_heads':4,'ffn_dim':64,'depthwise_conv_kernel_size':7},
@@ -183,11 +186,13 @@ class CRITIC(BASE):
         self.config = config
         cnn = self._make_cnn(config.CNN)
         permute = xron.nn.Permute([2,0,1]) #[N,C,L] -> [L,N,C]
-        rnn = self._make_rnn(config.RNN,
-                             in_channels = config.CNN['Layers'][-1]['out_channels'])
-        directions = 2 if self.config.RNN['layer_type'] == "BidirectionalRNN" else 1
+        if config.RNN['num_layers'] > 0:
+            rnn = self._make_rnn(config.RNN,
+                                in_channels = config.CNN['Layers'][-1]['out_channels'])
+            directions = 2 if self.config.RNN['layer_type'] == "BidirectionalRNN" else 1
+        fnn_channels = config.RNN['hidden_size']*directions if config.RNN['num_layers'] else config.CNN['Layers'][-1]['out_channels']
         fnn = self._make_fnn(config.FNN.copy(),
-                             in_channels = config.RNN['hidden_size']*directions)
+                             in_channels = fnn_channels)
         self.net = nn.Sequential(*cnn,permute,*rnn,*fnn)
         self.mse_loss = nn.MSELoss(reduction = "none")
         
@@ -207,15 +212,20 @@ class CRNN(BASE):
         """
         super().__init__()
         self.config = config
+        self.stride = reduce(lambda x,y: x*y, [l['stride'] for l in config.CNN['Layers']])
         # att = self._make_attention_norm(config.ATTENTION, 1)
         # cnn = self._make_cnn(config.CNN,in_channels = config.ATTENTION['Layers'][-1]['hidden_num'])
         cnn = self._make_cnn(config.CNN)
         permute = xron.nn.Permute([2,0,1]) #[N,C,L] -> [L,N,C]
-        rnn = self._make_rnn(config.RNN,
-                             in_channels = config.CNN['Layers'][-1]['out_channels'])
-        directions = 2 if self.config.RNN['layer_type'] == "BidirectionalRNN" else 1
+        if config.RNN['num_layers'] > 0:
+            rnn = self._make_rnn(config.RNN,
+                                in_channels = config.CNN['Layers'][-1]['out_channels'])
+            directions = 2 if self.config.RNN['layer_type'] == "BidirectionalRNN" else 1
+        else:
+            rnn = []
+        fnn_channels = config.RNN['hidden_size']*directions if config.RNN['num_layers'] else config.CNN['Layers'][-1]['out_channels']
         fnn = self._make_fnn(config.FNN.copy(),
-                             in_channels = config.RNN['hidden_size']*directions)
+                             in_channels = fnn_channels)
         log_softmax = nn.LogSoftmax(dim = 2)
         # self.net = nn.Sequential(*att,*cnn,permute,*rnn,*fnn,log_softmax)
         self.net = nn.Sequential(*cnn,permute,*rnn,*fnn,log_softmax)
