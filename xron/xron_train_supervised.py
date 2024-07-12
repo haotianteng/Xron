@@ -9,6 +9,7 @@ import argparse
 import numpy as np
 from torchvision import transforms
 import torch.utils.data as data
+from torch.utils.tensorboard import SummaryWriter
 from torch.utils.data.dataloader import DataLoader
 from functools import partial
 from xron.xron_model import CRNN, CONFIG
@@ -68,6 +69,7 @@ class SupervisedTrainer(Trainer):
                 loss,error = self.train_step(batch,get_error = calculate_error)
                 if torch.isnan(loss):
                     print("NaN loss detected, skip this training step.")
+                    raise ValueError("NaN loss detected.")
                     continue
                 optimizer.zero_grad()
                 loss.backward()
@@ -138,8 +140,8 @@ class SupervisedTrainer(Trainer):
             print("Found NaN input signal.")
             return None,None
         out = net.forward(signal_batch)
-        out_len = np.array([out.shape[0]]*out.shape[1],dtype = np.int64)
-        out_len = torch.from_numpy(out_len).to(self.device)
+        stride = net.stride
+        out_len = batch['signal_len']//stride
         seq = batch['seq']
         seq_len = batch['seq_len'].view(-1)
         loss = net.ctc_loss(out,out_len,seq,seq_len)
@@ -154,10 +156,17 @@ class SupervisedTrainer(Trainer):
                                   alphabet = 'N' + self.config.CTC['alphabeta'],
                                   beam_size = self.config.CTC['beam_size'],
                                   beam_cut_threshold = self.config.CTC['beam_cut_threshold'])
-        return loss,error
+        return loss,error    
 
-def load_data(chunk_f,seq_f,seqlen_f,mmap_mode = "r",alphabeta = "ACGT",max_n = None):
+def load_data(chunk_f,
+              seq_f,
+              seqlen_f,
+              chunklen_f = None,
+              mmap_mode = "r",
+              alphabeta = "ACGT",
+              max_n = None):
     chunks = np.load(chunk_f,mmap_mode= mmap_mode)
+    chunk_lens = None if chunklen_f is None else np.load(chunklen_f,mmap_mode= mmap_mode)
     reference = np.load(seq_f,mmap_mode= mmap_mode)
     ref_len = np.load(seqlen_f,mmap_mode= mmap_mode)
     if len(chunks) > len(reference):
@@ -168,15 +177,29 @@ def load_data(chunk_f,seq_f,seqlen_f,mmap_mode = "r",alphabeta = "ACGT",max_n = 
         reference = reference[:max_n]
         ref_len = ref_len[:max_n]
     nan_filter = ~np.any(np.isnan(chunks),axis=1)
+    print(f"{np.sum(~nan_filter)} samples are removed due to NaN in chunks.")
+    #check if sequence contains only alphabeta characters
+    seq_filter = np.asarray([set(x).issubset(set(alphabeta)) for x in reference])
+    print(f"{np.sum(~seq_filter)} samples are removed due to invalid nucoletide in the sequence.")
+    nan_filter = nan_filter & seq_filter
+    print(f"{np.sum(~nan_filter)} total samples removed, remain {np.sum(nan_filter)} samples.")
     chunks = chunks[nan_filter]
     reference = reference[nan_filter]
-    ref_len = ref_len[nan_filter]
-    ref_len = ref_len.astype(np.int64)
+    ref_len = ref_len[nan_filter].astype(np.int64)
+    chunk_lens = None if chunk_lens is None else chunk_lens[nan_filter].astype(np.int64)
     if reference[0].dtype.kind in ['U','S']:
         alphabet_dict = {x:i+1 for i,x in enumerate(alphabeta)}
-        dataset = Dataset(chunks,seq = reference,seq_len = ref_len,transform = transforms.Compose([NumIndex(alphabet_dict),ToTensor()]))
+        dataset = Dataset(chunks,
+        chunks_len = chunk_lens,
+        seq = reference,
+        seq_len = ref_len,
+        transform = transforms.Compose([NumIndex(alphabet_dict),ToTensor()]))
     else:
-        dataset = Dataset(chunks,seq = reference,seq_len = ref_len,transform = transforms.Compose([ToTensor()]))
+        dataset = Dataset(chunks,
+        chunks_len = chunk_lens,
+        seq = reference,
+        seq_len = ref_len,
+        transform = transforms.Compose([ToTensor()]))
     return dataset
 
 def main(args):
@@ -214,11 +237,22 @@ def main(args):
     elif args.config:
         config = load_config(args.config)
     print("Read chunks and sequence.")
-    dataset = load_data(args.chunks,args.seq,args.seq_len,mmap_mode = "r",alphabeta = config.CTC['alphabeta'])
+    dataset = load_data(args.chunks,
+                        args.seq,
+                        args.seq_len,
+                        chunklen_f = args.chunk_len, 
+                        mmap_mode = "r",
+                        alphabeta = config.CTC['alphabeta'])
     eval_size = config.TRAIN['eval_size']
     if args.eval_chunks:
         print("Read evaluation chunks and sequence.")
-        eval_ds = load_data(args.eval_chunks,args.eval_seq,args.eval_seq_len,mmap_mode = "r",alphabeta = config.CTC['alphabeta'],max_n = eval_size*args.batch_size)
+        eval_ds = load_data(args.eval_chunks,
+                            args.eval_seq,
+                            args.eval_seq_len,
+                            chunklen_f = args.eval_chunk_len,
+                            mmap_mode = "r",
+                            alphabeta = config.CTC['alphabeta'],
+                            max_n = eval_size*args.batch_size)
     else:
         dataset,eval_ds = torch.utils.data.random_split(dataset,[len(dataset) - eval_size, eval_size], generator=torch.Generator().manual_seed(42))
     loader = data.DataLoader(dataset,batch_size = config.TRAIN['batch_size'],shuffle = True, num_workers = 2)
@@ -263,7 +297,7 @@ def main(args):
     lr = args.lr
     epoches = args.epoches
     optim = optimizers[config.TRAIN['optimizer']](net.parameters(),lr = lr)
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optim, 'min', patience = 10,factor = 0.3,verbose = True)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optim, 'min', patience = 10,factor = 0.3)
     # scheduler = None
     COUNT_CYCLE = args.report
     valid_check_cycle = args.valid_cycle
@@ -279,12 +313,16 @@ def add_arguments(parser):
                         help="The .npy file contain the sequence.")
     parser.add_argument('--seq_len', required = True,
                         help="The .npy file contain the sueqnece length.")
+    parser.add_argument('--chunk_len', default = None,
+                        help="The .npy file contain the chunk length, default is none, which assume full length of every signal.")
     parser.add_argument('--eval_chunks',default = None,
                         help="The .npy file contain the chunks for evaluation.")
     parser.add_argument('--eval_seq',default = None,
                         help="The .npy file contain the sequence for evaluation.")
     parser.add_argument('--eval_seq_len',default = None,
                         help="The .npy file contain the sequence length for evaluation.")
+    parser.add_argument('--eval_chunk_len',default = None,
+                        help="The .npy file contain the chunk length for evaluation.")
     parser.add_argument('--embedding', default = None,
                         help="The folder contains the embedding model, if retrain is enable this will have no effect.")
     parser.add_argument('--device', default = 'cuda',
@@ -319,8 +357,6 @@ def add_arguments(parser):
     parser.add_argument('--label_smooth', type = float, default = 0.0)
 
 def post_args(args):
-    if args.logging:
-        from torch.utils.tensorboard import SummaryWriter
     if args.retrain and args.embedding:
         args.embedding = None
         print("Embedding is being overrided by --load argument.")
@@ -329,5 +365,7 @@ def post_args(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description='Training model with tfrecord file')
+    add_arguments(parser)
     args = parser.parse_args(sys.argv[1:])
+    post_args(args)
     main(args)
