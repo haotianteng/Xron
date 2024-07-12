@@ -109,18 +109,19 @@ class NullContextManager(object):
     def __exit__(self, *args):
         pass
 
-def pod5_iter(pod5_file, mode = 'r', tqdm_bar = False):
+def pod5_iter(input_f, mode = 'r', tqdm_bar = False):
     fail_count = 0
     with tqdm() if tqdm_bar else NullContextManager() as t:
-        with pod5.DatasetReader(Path(pod5_file)) as dataset:
+        with pod5.DatasetReader(input_f,recursive = True) as dataset:
             for read_record in dataset.reads():
                 try:
-                    signal = read_record.signal.astype(np.float32)
+                    signal = read_record.signal_pa.astype(np.float32)
                     read_id = read_record.read_id
+                    file_path = dataset.get_path(read_id)
                     if tqdm_bar:
                         t.postfix = "Read: %s, failed: %d"%(read_id,fail_count)
                         t.update()
-                    yield read_record,signal,read_id
+                    yield read_record,signal,file_path,read_id
                 except Exception as e:
                     print("Reading %s failed due to %s."%(read_id,e))
                     fail_count += 1
@@ -158,6 +159,8 @@ def fast5_iter(fast5_dir,mode = 'r',tqdm_bar = False):
                 if not filename.endswith('fast5'):
                     continue
                 abs_path = os.path.join(dirpath,filename)
+                if os.path.islink(abs_path):
+                    abs_path = os.path.realpath(abs_path)
                 try:
                     root = h5py.File(abs_path,mode = mode)
                 except Exception as e:
@@ -199,7 +202,7 @@ def fast5_iter(fast5_dir,mode = 'r',tqdm_bar = False):
                                 t.update()
                             continue
                 root.close()
-            
+
 def med_mad(x, factor=1.4826):
     """
     Calculate signal median and median absolute deviation
@@ -520,10 +523,34 @@ class Methylation_DP_Aligner(object):
         ref_algn = ref_algn[:len(rs_x)] #Trim the right side of the reference
         m_seq = [(x if x!="_" else y) for x,y in zip(seq_x,ref_algn) if y!="_"]
         return ''.join(m_seq)
-    
+
+def get_modification_tag(seq,qc, mod_code):
+    canonical_base = mod_code.split("+")[0]
+    if isinstance(seq,str):
+        seq = np.asarray(list(seq))
+    if isinstance(qc,str):
+        qc = np.asarray([ord(x)-33 for x in qc])
+        qc = 10**(qc/(-10))*256
+        qc = qc.astype(int)
+    base_mask = np.logical_or(seq == canonical_base, seq == 'M')
+    sub_seq = seq[base_mask] #Extract all the A and M bases
+    M_pos = np.where(sub_seq == 'M')[0] #Find indexes of M base in the subsequence
+    seq[seq == 'M'] = canonical_base #Replace M base with canonical base
+    #count the interval between M bases
+    mm = np.diff([-1]+ M_pos.tolist()) - 1
+    mm_str = f'MM:{mod_code}?,' + ','.join([str(x) for x in mm]) + ';' #Generate the MM tag
+    mod_prob = [str(x) for x in qc[M_pos]]
+    ml_str = "ML:B:C:,"+ ','.join(mod_prob)
+    return ''.join(seq), '\t'.join([mm_str,ml_str])
+
 if __name__ == "__main__":
     aligner = Methylation_DP_Aligner()
     x = "AAAGAATCA"
     y = "AAAAGAATTCACA"
     x_,y_ = aligner.align(x,y)
     print(aligner.merge(x_,y_))
+
+    seq = "CATTATGGCTMTGCCA"
+    qc = "(((*.12///035654"
+    mode_code = "A+a"
+    print(get_modification_tag(seq,qc,mode_code))
