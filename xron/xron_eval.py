@@ -22,13 +22,15 @@ import xron._version
 from xron.xron_model import CRNN, CONFIG
 from xron.xron_train_base import load_config
 from xron.utils.decode import viterbi_decode,beam_search
-from xron.utils.seq_op import  {raw2seq,
-                                fast5_iter,
-                                pod5_iter,
-                                norm_by_noisiest_section,
-                                med_normalization,
-                                list2string,
-                                get_modification_tag}
+from xron.utils.seq_op import  (
+    raw2seq,
+    fast5_iter,
+    pod5_iter,
+    norm_by_noisiest_section,
+    med_normalization,
+    list2string,
+    get_modification_tag
+)
 from xron.utils.easy_assembler import simple_assembly_qs
 
 
@@ -496,7 +498,7 @@ def main(args):
                 'assembly_method':args.assembly_method,
                 'seq_batch':4000,
                 'mode':'rna',
-                "modificaion_code": "A+a",
+                "modification_code": "A+a",
                 'input_format':args.input_format,
                 'format':'fast5' if args.fast5 else 'fastq',
                 'beam_decoder_mode':"prob",
