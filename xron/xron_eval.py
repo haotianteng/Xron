@@ -13,7 +13,7 @@ from typing import Callable
 from datetime import datetime
 from itertools import groupby 
 from functools import partial
-from fast_ctc_decode import beam_search
+from fast_ctc_decode import beam_search as fast_beam_search
 from torchaudio.functional import forced_align
 from torchaudio.models.decoder import ctc_decoder
 from boostnano.boostnano_model import CSM
@@ -117,7 +117,6 @@ def qs(consensus, consensus_qs, output_standard='phred+33'):
         # sorted_consensus[-2, :] + 1))) + sorted_consensus_qs[-1, :] / sorted_consensus[-1, :] / np.log(10)
     average_qc = sorted_consensus_qs[-1, :] / sorted_consensus[-1, :] / np.log(10)
     qc = -10*average_qc
-    print(qc)
     if output_standard == 'number':
         return qc.astype(int)
     elif output_standard == 'phred+33':
@@ -321,7 +320,7 @@ class Evaluator(object):
             self.activation = {}
             def get_activation(name):
                 def hook(model,input,output):
-                    self.activation[name] = output.permute([1,0,2]).cpu().detach().numpy()
+                    self.activation[name] = output.permute([1,0,2]).cpu().detach().to(torch.float32).numpy()
                 return hook
             net.net[-4].register_forward_hook(get_activation('fnn1_out_linear'))
             self.result_collections['hiddens'] = []
@@ -383,9 +382,9 @@ class Evaluator(object):
         start = timer()
         if self.config.EVAL['amp']:
             with torch.autocast(device_type=self.config.EVAL['device'], dtype=torch.bfloat16):
-                self.curr_logits = self.net(batch).cpu().numpy() #TODO send the logits into a queue to enable multi-threading
+                self.curr_logits = self.net(batch).cpu() #TODO send the logits into a queue to enable multi-threading
         else:
-            self.curr_logits = self.net(batch).cpu().numpy()
+            self.curr_logits = self.net(batch).cpu()
         self.nn_time += timer() - start
     
     def beam_decode(self,posteriors):
@@ -394,7 +393,7 @@ class Evaluator(object):
         seqs = []
         for i in np.arange(N):
             p = np.exp(posteriors[:,i,:])
-            seq,path = beam_search(p,
+            seq,path = fast_beam_search(p,
                                    "N"+self.config.CTC["alphabeta"],
                                    beam_size = self.config.CTC["beam"],
                                    beam_cut_threshold = self.config.CTC["beam_cut_threshold"])
@@ -404,8 +403,9 @@ class Evaluator(object):
     
     def beam_decode_prob(self,posteriors,sig_len):
         L,N,C = posteriors.shape
-        seqs,moves,probs = beam_search(self.beam_search_decoder, torch.tensor(posteriors), torch.tensor(sig_len).to(int), return_path = True)
-        seqs =[x[0] for x in seqs]
+        posteriors = posteriors.permute([1,0,2]).contiguous()
+        seqs,moves,probs = beam_search(self.beam_search_decoder, posteriors.to(torch.float32), sig_len.to(int), return_paths = True)
+        seqs =[x[0]-1 for x in seqs] #torchaudio.decoder index starts from 1
         moves = [x[0] for x in moves]
         probs = [x[0] for x in probs] #squeeze the second dimension where nbest = 1
         return seqs,moves,probs
@@ -415,11 +415,14 @@ class Evaluator(object):
         sig_len = torch.tensor([x[2] for x in meta]).to(int)//self.net.stride
         start = timer()
         if self.config.CTC["beam"] <= 1:
+            self.curr_logits = self.curr_logits.numpy()
             sequence,move = viterbi_decode(self.curr_logits)
         elif self.config.EVAL['beam_decoder_mode'] == "fast":
+            self.curr_logits = self.curr_logits.numpy()
             sequence,move = self.beam_decode(self.curr_logits)
         else:
             sequence,move,path_logits = self.beam_decode_prob(self.curr_logits, sig_len)
+            self.curr_logits = self.curr_logits.numpy()
         self.result_collections['seqs'] += sequence
         self.result_collections['metas'] += meta
         self.result_collections['moves'] += move
@@ -431,7 +434,7 @@ class Evaluator(object):
             self.result_collections['hiddens'] += list(self.activation['fnn1_out_linear'])
             self.result_collections['logits'] += list(np.transpose(self.curr_logits,(1,0,2)))
         self.assembly_time += timer() - start
-        # self._call()
+        self._call()
     
     def _call(self):
         if (None,None,None) in self.metas:
@@ -496,7 +499,7 @@ def main(args):
                 "chunk_len":args.chunk_len,
                 'device':args.device,
                 'assembly_method':args.assembly_method,
-                'seq_batch':4000,
+                'seq_batch':10,
                 'mode':'rna',
                 "modification_code": "A+a",
                 'input_format':args.input_format,

@@ -16,25 +16,36 @@ def beam_search(decoder, logits, seq_len, return_paths = True,vocab = ['b','A','
 def force_align_batch(log_probs, targets,device = 'cpu'):
     """A batch wrapper for force_align function
     force_align function can only take batch 1 as current version of torchaudio: 2.4.0
-    log_probs: A tensor of shape [batch_size, max_time, num_classes]
+    log_probs: A tensor of shape [N,L,C] N - batch_size, L - sequence length, C - number of classes
     targets: A nested lists, where the first dimension is the batch size, and the second dimesnion 
         is n_best paths, and the third dimension is the tokens
     
     """
     moves, path_logits = [],[]
+    N,L,C = log_probs.shape
     log_probs = log_probs.to(device)
-    for i in range(log_probs.shape[0]):
+    for i in range(N):
+        log_prob = log_probs[i]
         target = targets[i]
         curr_m, curr_p = [],[]
         for t in target:
             t_len = torch.tensor([len(t)]).to(device)
-            t = torch.tensor(t).to(device)
-            align,pl = forced_align(log_probs = log_probs[i].unsqueeze(0),
+            if not torch.is_tensor(t):
+                t = torch.tensor(t)
+            t = t.to(device)
+            if len(t) == 0:
+                align = torch.zeros(L,dtype = torch.bool)
+                pl = torch.zeros(L,dtype = torch.float32)
+            else:
+                align,pl = forced_align(log_probs = log_prob.unsqueeze(0),
                         targets = t.unsqueeze(0),
                         target_lengths=t_len)
-            move = (align>0)
+            move = (align>0) # [1,L]
             curr_p.append(pl[move])
-            curr_m.append(move.to(int).squeeze(0))
+            #pad move to the same length as log_prob
+            move = move.squeeze(0) # [L]
+            move = torch.cat([move,torch.zeros(L-len(move),dtype = torch.bool)])
+            curr_m.append(move.to(int).numpy())
         moves.append(curr_m)
         path_logits.append(curr_p)    
     return moves, path_logits
