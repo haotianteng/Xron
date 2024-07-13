@@ -38,6 +38,7 @@ install_requires=[
   'boostnano',
   'editdistance==0.6.1',
   'boostnano',
+  'vbz_h5py_plugin',
 ]
 exec(open('xron/_version.py').read()) #readount the __version__ variable
 setup(

@@ -5,6 +5,7 @@ Created on Mon Apr 19 13:59:01 2021
 """
 from numpy import ndarray
 import os
+import vbz_h5py_plugin
 import h5py
 import pod5
 import itertools
@@ -177,7 +178,7 @@ def fast5_iter(fast5_dir,mode = 'r',tqdm_bar = False):
                     else:
                         signal = np.asarray(read_h[('Signal')],dtype = np.float32)
                     read_id = read_h.attrs['read_id']
-                    if type(read_id) != type('a'):
+                    if not isinstance(read_id,str):
                         read_id = read_id.decode("utf-8")
                     if tqdm_bar:
                         t.postfix = "File: %s, Read: %s, failed: %d"%(abs_path,read_id,fail_count)
@@ -193,7 +194,8 @@ def fast5_iter(fast5_dir,mode = 'r',tqdm_bar = False):
                             if tqdm_bar:
                                 t.postfix = "File: %s, Read: %s, failed: %d"%(abs_path,read_id,fail_count)
                                 t.update()
-                            yield read_h,signal,abs_path,read_id.decode("utf-8")
+                            read_id = read_id.decode("utf-8") if not isinstance(read_id,str) else read_id
+                            yield read_h,signal,abs_path,read_id
                         except Exception as e:
                             print("Reading %s failed due to %s."%(read_id,e))
                             fail_count += 1

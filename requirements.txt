@@ -15,3 +15,4 @@ scikit-learn
 matplotlib
 pod5
 Biopython
+vbz_h5py_plugin
