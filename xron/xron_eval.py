@@ -553,7 +553,7 @@ def add_arguments(parser):
                         help = "The folder contains the model, can also be model identifier including ENEYFT, ENE, ENEHEK. Recommend to use ENEYFT model.")
     parser.add_argument('-o', '--output', required = True,
                         help = "The output folder.")
-    parser.add_argument('--input_format', default = "pod5",
+    parser.add_argument('--input_format', default = "fast5",
                         help = "The input file format, defautl is pod5 file, can be fast5.")
     parser.add_argument('--fast5',action = "store_true",dest = "fast5",
                         help = "If output fast5 files.")

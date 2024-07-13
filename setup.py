@@ -15,7 +15,7 @@ class CustomInstallCommand(install):
 install_requires=[
   'h5py',
   'mappy>=2.10.0',
-  'numpy>=1.13.3',
+  'numpy==1.24.4',
   'statsmodels>=0.8.0',
   'tqdm>=4.23.0',
   'scipy>=1.0.1',
