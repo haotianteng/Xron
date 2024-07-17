@@ -145,7 +145,18 @@ def transcript_position(genomics_contig,genomics_start,genomics_end,g2t_dict):
                         yield pos[0],pos[1],g2t_dict[ref][e][e_ids.index(pos[0])][1]
         
 #%%
-def collect_reads_from_bam(bam_f,reference,putative_site_start_exact,putative_site_end_exact,putative_ref_exact,fast5_mapping,span,rep,chrom = None,pbar = None,g2t_dict = None):
+def collect_reads_from_bam(bam_f,
+                           reference,
+                           putative_site_start_exact,
+                           putative_site_end_exact,
+                           putative_ref_exact,
+                           fast5_mapping,
+                           span,
+                           rep,
+                           chrom = None,
+                           pbar = None,
+                           g2t_dict = None,
+                           memory_saving = False):
     collections = {"rep":[],"ids":[],"fast5s":[],"seq_pos":[],"contig":[],
                    "refpos":[],"ref_segment":[],"segment":[],"query_seq":[],
                    "modified":[],"reverse_align":[],"basecall_seq":[],"qr_index":[],
@@ -191,15 +202,20 @@ def collect_reads_from_bam(bam_f,reference,putative_site_start_exact,putative_si
             collections['segment'].append('')
             collections['fast5s'].append(fast5_mapping[read.query_name])
             collections['query_seq'].append(read.query_sequence)
-            collections['basecall_seq'].append("") #commented out to save memory
-            collections['reference_seq'].append(read.get_reference_sequence())
+            if not memory_saving:
+                collections['basecall_seq'].append("") #commented out to save memory
+                collections['reference_seq'].append(read.get_reference_sequence())
+                collections['qr_index'].append(':'.join([str(int(x)) for x in pos[:,0]])+'|'+':'.join([str(int(x)) for x in pos[:,1]]))
+            else:
+                collections['basecall_seq'].append("*")
+                collections['reference_seq'].append("*")
+                collections['qr_index'].append("*")
             collections['contig'].append(ref)
             collections['seq_pos'].append(int(q_idx))
             collections['refpos'].append(s)
             collections['ref_segment'].append(refseq)
             collections['modified'].append(False)
             collections['reverse_align'].append(read.is_reverse)
-            collections['qr_index'].append(':'.join([str(x) for x in pos[:,0]])+'|'+':'.join([str(x) for x in pos[:,1]]))
             success_count += 1
         if single_thread:
             pbar.set_postfix_str(f"Success reads: {success_count}, Skip: {skip_count}")
@@ -278,6 +294,7 @@ def parse_args():
     parser.add_argument('--reps', type = str, default = None, help = "Reps of the samples, split by comma, need to have the same length as names")
     parser.add_argument('--subset', type = str, default = None, help = "Which subset of sites to use can be balance,500genes,test. Default is None, which use all the sites.")
     parser.add_argument('--filter', type = bool, default = None, help = "If we want to filter the sites, default is None, all sites are selected.")
+    parser.add_argument('--store_full', action = "store_ture", dest = "store_full", help = "Store the full output, default is False")
     args = parser.parse_args()
     args.names = args.names.split(',') if args.names else None
     args.reps = args.reps.split(',') if args.reps else None
@@ -454,9 +471,9 @@ if __name__ =="__main__":
     manager.start()
     # multiprocessing with rep,n and chrom
     pbars = manager.MultiPbars(bar_string = ['']*(threads_n+1)) #Main process to keep the manager
-    def worker(args):
+    def worker(arguments):
         time.sleep(random.random())
-        rep,n,chrom,pbars = args
+        rep,n,chrom,pbars = arguments
         if chrom != None:
             putative_site_start_exact = putative_site_start[putative_ref == chrom]
             putative_site_end_exact = putative_site_end[putative_ref == chrom]
@@ -496,7 +513,8 @@ if __name__ =="__main__":
                                             rep = rep,
                                             chrom = chrom,
                                             pbar = pbars,
-                                            g2t_dict=g2t_dict)
+                                            g2t_dict=g2t_dict,
+                                            memory_saving = (not args.store_full))
         if threads_n == 1:
             print("Collecting info from fast5...")
         # pbar = tqdm(total = len(collections['ids']),position = pos, desc = f"#{pos} read fast5:{rep} {chrom}")
@@ -504,14 +522,14 @@ if __name__ =="__main__":
         df.to_csv(os.path.join(out_f,f"readIDs_{repo}_{name}.csv"))
     # generate iterator of rep,n and chrom
     if separate_chrom:
-        args = [(rep,n,chrom,pbars) for rep,n in zip(reps,names) for chrom in np.unique(putative_ref)]
+        running_args = [(rep,n,chrom,pbars) for rep,n in zip(reps,names) for chrom in np.unique(putative_ref)]
     else:
-        args = [(rep,n,None,pbars) for rep,n in zip(reps,names)]
+        running_args = [(rep,n,None,pbars) for rep,n in zip(reps,names)]
     # multiprocessing
     if threads_n > 1:
         with Pool(threads_n) as p:
-            p.map(worker,args)
+            p.map(worker,running_args)
     else:
-        for arg in args:
+        for arg in running_args:
             print(f"Processing {' '.join(arg[:2])}...")
             worker(arg)
