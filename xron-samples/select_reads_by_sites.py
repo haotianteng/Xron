@@ -15,7 +15,7 @@ from multiprocessing.managers import BaseManager
 import sys
 from functools import partial
 class MultiProcessBars(object):
-    def __init__(self,bar_string,l = 40):
+    def __init__(self,bar_string,l = 40, min_update_intervel = 0.5):
         """Maintain multiple progress bars of chiron running
         Args:
             bar_string([string]): List of the names of the bars.
@@ -32,6 +32,8 @@ class MultiProcessBars(object):
         self.total = [-1]*self.bar_n
         self.max_line = 0
         self.bar_l = l
+        self.update_time = time.time()
+        self.min_update_intervel = min_update_intervel
     def update(self,i,progress=None,total=None,title = None):
         if progress is not None:
             self.progress[i] += progress
@@ -42,7 +44,9 @@ class MultiProcessBars(object):
     def init(self,i):
         self.progress[i] = 0
     def update_bar(self):
-        self.refresh()
+        if time.time()-self.update_time > self.min_update_intervel:
+            self.refresh()
+            self.update_time = time.time()
     def set_postfix_str(self,i,postfix):
         self.postfix[i] = postfix
     def refresh(self):
@@ -269,7 +273,6 @@ def read_bc_from_fast5(collections,span,pbar = None):
                     except KeyError as e:
                         continue
                 seq = str(np.asarray(result_h['Fastq']).astype(str)).split('\n')[1]
-                # collections['basecall_seq'][idx] = seq
                 if collections['reverse_align'][idx]:
                     bc_idx = len(seq) - 1 - int(collections['seq_pos'][idx])
                 else:
