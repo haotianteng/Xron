@@ -15,7 +15,7 @@ from multiprocessing.managers import BaseManager
 import sys
 from functools import partial
 class MultiProcessBars(object):
-    def __init__(self,bar_string,l = 40, min_update_intervel = 0.5):
+    def __init__(self,bar_string,l = 40, min_update_intervel = 1):
         """Maintain multiple progress bars of chiron running
         Args:
             bar_string([string]): List of the names of the bars.
@@ -160,7 +160,7 @@ def collect_reads_from_bam(bam_f,
                            chrom = None,
                            pbar = None,
                            g2t_dict = None,
-                           memory_saving = False):
+                           memory_saving = True):
     collections = {"rep":[],"ids":[],"fast5s":[],"seq_pos":[],"contig":[],
                    "refpos":[],"ref_segment":[],"segment":[],"query_seq":[],
                    "modified":[],"reverse_align":[],"basecall_seq":[],"qr_index":[],
@@ -218,7 +218,7 @@ def collect_reads_from_bam(bam_f,
             collections['seq_pos'].append(int(q_idx))
             collections['refpos'].append(s)
             collections['ref_segment'].append(refseq)
-            collections['modified'].append(False)
+            collections['modified'].append(None)
             collections['reverse_align'].append(read.is_reverse)
             success_count += 1
         if single_thread:
@@ -370,6 +370,7 @@ if __name__ =="__main__":
         config['reps'] = ["WT1_RNAAA023484","KO1_RNAAA024588","KO2_RNAAB058843","KO3_RNAAB059882","WT2_RNAAB056712","WT3_RNAAB057791"]
         config['names'] = ["wt1","ko1","ko2","ko3","wt2","wt3"]
         putative_site_start,putative_site_end,putative_ref = read_yeast_sites(config['sites_f'])
+        span = 5
 
     #%% Human datasets
     if args.run == "human_old":
@@ -382,7 +383,7 @@ if __name__ =="__main__":
         # config['sites_f] = f"{scratch_f}/Xron_Project/m6A_site_m6Anet_DRACH_HEK293T_subset500genes.csv"; config["names"] = ["wt1-500","ko1-500"]
         # config['sites_f] = f"{scratch_f}/Xron_Project/m6A_site_m6Anet_DRACH_HEK293T_test.csv"; config["names"] = ["wt1-test","ko1-test"]
         config['sites_f'] = f"{scratch_f}/Xron_Project/m6A_site_m6Anet_DRACH_HEK293T.csv"; config["names"] = ["wt1"]; #config["names"] = ["wt1","ko1"]
-
+        span = 5
 
         config['out_f'] = f"{scratch_f}/Xron_Project/Benchmark/HEK293T/xron_crosslink2_finetune_positive_site/"; config['repo'] = "xron_crosslink2_YeastFinetune_4000L"; config['assess_folder'] = "assess_transcript"
         # out_f = f"{scratch_f}/Xron_Project/Benchmark/HEK293T/xron_crosslink2_Yeast+HEK293TFinetune_Converge_4000L/"; repo = "xron_crosslink2_Yeast+HEK293TFinetune_Converge_4000L"; assess_folder = "assess_transcript"; 
@@ -390,6 +391,7 @@ if __name__ =="__main__":
         # out_f = f"{scratch_f}/Xron_Project/Benchmark/HEK293T/xron_crosslink2_Yeast+HEK293T+MERGEFinetune_Converge_4000L/"; repo = "xron_crosslink2_Yeast+HEK293T+MERGEFinetune_Converge_4000L" ;assess_folder = "assess_minimap2"
         config['reps'] = ["HEK293T-WT-rep1"] # config['reps'] = ["HEK293T-WT-rep1","HEK293T-Mettl3-KO-rep1"]
         putative_site_start,putative_site_end,putative_ref = read_human_sites(config['sites_f'])
+        span = 5
 
     #%% Yeast datasets configure 2 (Deprecated)
     # if args.run == "yeast":
@@ -416,6 +418,7 @@ if __name__ =="__main__":
         config['reps'] = args.reps if args.reps else config['reps']
         g2t_dict = config['g2t_dict']
         putative_site_start,putative_site_end,putative_ref = read_yeast_sites(config['sites_f'])
+        span = 5
 
     #%% Human datasets
     if args.run == "human":
@@ -440,6 +443,7 @@ if __name__ =="__main__":
         config['names'] = args.names if args.names else config['names']
         config['reps'] = args.reps if args.reps else config['reps']
         putative_site_start,putative_site_end,putative_ref = read_human_sites(config['sites_f'])
+        span = 2
 
     #%% AT datasets
     if (args.run == "AT") or (args.run == "at") or (args.run == "Arabidopsis thaliana"):
@@ -454,7 +458,8 @@ if __name__ =="__main__":
         config['reps'] = args.reps if args.reps else ["col0_nanopore_drs_1","col0_nanopore_drs_2","col0_nanopore_drs_3"]
         putative_site_start,putative_site_end,putative_ref = read_at_sites(config['sites_f'])
         os.makedirs(config['out_f'],exist_ok = True)
-    
+        span = 5
+
     print(config)
     reference = config['reference']
     out_f = config['out_f']
@@ -493,7 +498,6 @@ if __name__ =="__main__":
             return
         assess_f = f"{base_f}/{rep}/{repo}/{assess_folder}"
         bam_f = f"{assess_f}/aln.sorted.bam"
-        span = 5
         if threads_n == 1:
             print(f"Total {len(putative_ref_exact)} DRACH reference sites.")
         fast5_mapping = read_mapping(f"{assess_f}/merge.fastq.index",replace_prefix=["/ocean/projects/hmcmutc/haotiant/",f"{scratch_f}"])
