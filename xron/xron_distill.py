@@ -3,13 +3,15 @@
 import os
 import pandas as pd
 import pysam
-import time
 import pod5 as p5
 import numpy as np
+import multiprocessing as mp
 from tqdm import tqdm
+from functools import lru_cache
 from collections import defaultdict
 from xron.utils.fastIO import Indexer
 from xron.utils.seq_op import norm_by_noisiest_section
+
 
 def and_filters(filters):
     def and_filter(kwargs):
@@ -19,26 +21,83 @@ def and_filters(filters):
         return True
     return and_filter
 
-class Balancer(object):
-    #TODO impelement a balancer to balance the 
-    #number of reads selected from each reference
-    pass
+def get_partition(total_len, partition_len):
+    "get the partition segment"
+    "for segment < half partition_len, merge it to the previous segment"
+    "for segment > half partition_len, split it to two segments"
+    if total_len < partition_len:
+        return [total_len]
+    else:
+        partitions = []
+        for i in range(partition_len,total_len,partition_len):
+            partitions.append(i)
+        if total_len - partitions[-1] < partition_len//2:
+            partitions[-1] = total_len
+        else:
+            partitions.append(total_len)
+        return partitions
+    
 
+class Balancer(object):
+    def __init__(self, config):
+        self.ref_counts = defaultdict(int)
+        self.partition_dict = {}
+        self.partition_over = config.get('partition_over',100000) #Partition the reference for length over this value
+        self.max_single_ref = config.get('max_single_ref',3) #Maximum ratio of reads from a single reference to the median of all references
+        self.mean = 1e-6
+        self.std = 1
+
+    def load_ref(self, ref_f):
+        self.ref = pysam.FastaFile(ref_f)
+        for ref in self.ref.references:
+            ref_len = self.ref.get_reference_length(ref)
+            partitions = get_partition(ref_len, self.partition_over)
+            self.partition_dict[ref] = np.asarray(partitions)
+
+    def get_statistic(self):
+        ref_counts = np.asarray(list(self.ref_counts.values()))
+        if len(ref_counts) == 0:
+            return 0,1
+        return np.mean(ref_counts), np.std(ref_counts)
+    
+    def update_statistic(self):
+        self.mean, self.std = self.get_statistic()
+
+    def add(self, ref_id, start, end):
+        partition_idxs = self.get_partition_idx(ref_id,start,end)
+        for idx in partition_idxs:
+            self.ref_counts[f"{ref_id}@{idx}"] += 1
+        self.update_statistic()
+    
+    def balance_check(self, ref_id, start, end):
+        partition_idxs = self.get_partition_idx(ref_id,start,end)
+        for idx in partition_idxs:
+            if self.ref_counts[f"{ref_id}@{idx}"] > self.mean + self.max_single_ref * max(self.std,1):
+                return False
+        self.add(ref_id,start,end)
+        return True
+    
+    @lru_cache(maxsize = 10)
+    def get_partition_idx(self,ref_id,start,end):
+        partition_table = self.partition_dict[ref_id]
+        start_id = np.where(partition_table>=start)[0][0]
+        end_id = np.where(partition_table>=end)[0][0]
+        idxs = np.arange(start_id,end_id+1)
+        return idxs
 
 class Distiller(object):
-    def __init__(self, config, filters = []):
+    def __init__(self, config, filters = [], result_queue = None):
         self.config = config
+        self.balancer = Balancer(config)
         self.reverse = True if "RNA" in config['kit'] else False
         self.modification_code = config['modification_code']
         self.chunk_len = config['chunk_len']
         self.run_status = defaultdict(int)
         self.filter = and_filters(filters)
         self.pod5 = None
+        self.queue = result_queue
 
-        #debugging code
-        self.accumulate_time = 0
-    
-    def load_data(self,bam_f, pod5_f, ref_f, immun_f = None):
+    def load_data(self,bam_f, pod5_f, ref_f, immun_f = None,batch_ids = None):
         self.bam_f = bam_f
         self.index_f = index_f
         self.ref_f = ref_f
@@ -49,18 +108,30 @@ class Distiller(object):
         self.indexer.load(self.index_f)
         self.align = pysam.AlignmentFile(self.bam_f, "rb")
         self.ref = pysam.FastaFile(self.ref_f)
-        self.pod5 = p5.DatasetReader(pod5_f)
+        if batch_ids:
+            def batch_iter():
+                file = p5.Reader(pod5_f)
+                for batch in file.read_batches(batch_selection = batch_ids, preload = {"samples"}):
+                    for read in batch.reads():
+                        yield read
+            self.pod5_iter = batch_iter()
+        else:
+            self.pod5_iter = p5.DatasetReader(pod5_f).reads(preload = {"samples"})
+        self.balancer.load_ref(ref_f)
         if self.immun_f:
             self.immun = pd.read_csv(self.immun_f)
         else:
             self.immun = None
 
-    def run(self,out_f):
+    def run(self,rank = 0):
         #select signal and sequences given the indexer mapping
         #iterate over the read ids of pod5 file 
         chunks, seqs = [], []
-        with tqdm(self.pod5.reads(), mininterval=0.1) as t:
-          for pod5_read in t:
+        if rank == 0:
+            t = tqdm(self.pod5_iter, mininterval=0.1)
+        else:
+            t = self.pod5_iter
+        for pod5_read in t:
             read_id = str(pod5_read.read_id)
             try:
                 index_map = self.indexer[read_id]
@@ -68,14 +139,12 @@ class Distiller(object):
                 self.run_status["Unaligned"] += 1
                 continue
             ref_id = index_map['reference_name']
-            start = time.time()
             for read in self.align.fetch(ref_id):
                 if read.query_name == read_id:
                     break
             if read.query_name != read_id:
                 self.run_status["Read not found in BAM"] += 1
                 continue
-            self.accumulate_time += time.time() - start
             seq = read.query_sequence
             ref = self.ref.fetch(read.reference_name)
             if read.is_reverse:
@@ -130,6 +199,10 @@ class Distiller(object):
                     self.run_status["Reference seq length mismatch"] += 1
                     i += 1
                     continue
+                if not self.balancer.balance_check(ref_id, ref_s, ref_e):
+                    self.run_status["Balance out"] += 1
+                    i = seq_end
+                    continue
 
                 #If immunoprecipitation result is provided, modify the sequence at the modification site
                 if self.immun is not None:
@@ -138,30 +211,31 @@ class Distiller(object):
                 #Filter the sequence
                 if self.filter({'seq':seq,'signal':sig_chunk}):
                     #write to the out file
-                    seqs.append(seq)
-                    chunks.append(sig_chunk)
+                    if self.queue is not None:
+                        self.queue.put((sig_chunk,seq))
+                    else:
+                        seqs.append(seq)
+                        chunks.append(sig_chunk)
+                    self.balancer.add(ref_id, ref_s, ref_e)
                     i = seq_end
                     self.run_status["Processed"] += 1
                 else:
                     self.run_status["Filtered"] += 1
                     i += 5
-            t.set_postfix(self.run_status)
+            if rank == 0:
+                t.set_postfix(self.run_status)
             if len(chunks) > self.config['n_max']:
                 break
+        if self.queue is not None:
+            return
         #write to the out file
         chunk_lens = np.asarray([len(c) for c in chunks])
         #pad chunk to chunk_len
         chunks = np.array([np.pad(c,(0,self.chunk_len-len(c))) for c in chunks])
         seq_lens = np.asarray([len(s) for s in seqs])
         seqs = np.asarray(seqs)
-        np.save(os.path.join(out_f,"chunks.npy"),chunks)
-        np.save(os.path.join(out_f,"seqs.npy"),seqs)
-        np.save(os.path.join(out_f,"chunk_lens.npy"),chunk_lens)
-        np.save(os.path.join(out_f,"seq_lens.npy"),seq_lens)
+        return chunks, seqs, seq_lens, chunk_lens
 
-        #Time testing code
-        print(f"Time elapsed: {self.accumulate_time}")
-    
 
     def extract_signal(self, read):
         signal,_,_ = norm_by_noisiest_section(read.signal_pa)
@@ -288,7 +362,6 @@ def seq_sanity_check(record):
         return False
     return True
 
-
 if __name__ == "__main__":
     base = "/data/HEK293T_RNA004/"
     bam_f = f"{base}/aligned.sorted.bam"
@@ -298,18 +371,49 @@ if __name__ == "__main__":
     immun_f = f"{base}/m6A_site_m6Anet_DRACH_HEK293T_with_transcripts.csv"
     out_f = f"{base}/extracted/"
     os.makedirs(out_f, exist_ok =True)
+    runners = 8
+    n_batch_per_runner = None #each batch 1000 files
 
     #optional Immunoprecipitation file
     config = {"index_backend":"lmdb",
               "kit": "SQK-RNA004",
               "chunk_len":2000,
               "modification_code":'A+a',
-              "n_max":1000000, }
+              "n_max":1000000,
+              "partition_over":100000,
+              }
     
-    distiller = Distiller(config = config,
-        filters = [seq_filter, mono_filter, bps_rate_filter,seq_sanity_check])
-    distiller.load_data(bam_f,
-                        pod5_f = pod5_f,
-                        ref_f = ref_f,
-                        immun_f = immun_f)
-    distiller.run(out_f)
+    def worker(batch_ids,process_id,result_queue):
+        distiller = Distiller(config = config,
+            filters = [seq_filter, mono_filter, bps_rate_filter,seq_sanity_check],
+            result_queue = result_queue)
+        distiller.load_data(bam_f,
+                            pod5_f = pod5_f,
+                            ref_f = ref_f,
+                            immun_f = immun_f,
+                            batch_ids = batch_ids)
+        chunks, seqs, seq_lens, chunk_lens = distiller.run(process_id)
+        np.save(f"{out_f}/chunks_{process_id}.npy",chunks)
+        np.save(f"{out_f}/seqs_{process_id}.npy",seqs)
+        np.save(f"{out_f}/seq_lens_{process_id}.npy",seq_lens)
+        np.save(f"{out_f}/chunk_lens_{process_id}.npy",chunk_lens)
+    
+    
+    file = p5.Reader(pod5_f)
+    batches = list(range(file.batch_count))
+    start_idx = 0
+    processes_idx = 0
+    processes = []
+    if n_batch_per_runner is None:
+        n_batch_per_runner = len(batches) // runners
+    while start_idx < len(batches):
+        batch_ids = batches[start_idx:start_idx+n_batch_per_runner]
+        start_idx += len(batch_ids)
+        p = mp.Process(target = worker, args = (batch_ids,processes_idx,None))
+        processes_idx += 1
+        p.start()
+        processes.append(p)
+
+    for p in processes:
+        p.join()
+    
