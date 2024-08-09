@@ -4,13 +4,93 @@ Created on Thu Mar  4 19:33:04 2021
 @author: Haotian Teng
 """
 import numpy as np
+import lmdb
 import torchvision
 import torch
+import pickle
 from torch import nn
 import torch.utils.data as data
+from functools import lru_cache
 from torchvision import transforms
 from matplotlib import pyplot as plt
 from typing import Dict,Callable
+
+def seq_collate_fn(batch):
+    """
+    Collate function for the dataset, which will pad the signal and sequence.
+
+    Parameters
+    ----------
+    batch : List
+        A list of samples.
+
+    Returns
+    -------
+    Dict
+        A dictionary contain the batch data.
+
+    """
+    signal = [x['signal'] for x in batch]
+    signal = torch.stack(signal)
+    signal_len = [x['signal_len'] for x in batch]
+    signal_len = torch.stack(signal_len)
+    sample = {'signal': signal, 'signal_len': signal_len}
+    if 'seq' in batch[0]:
+        seq = [x['seq'] for x in batch]
+        seq_len = [x['seq_len'] for x in batch]
+        seq_len = torch.stack(seq_len)
+        seq = nn.utils.rnn.pad_sequence(seq,batch_first = True, padding_value = 0)
+        sample['seq'] = seq
+        sample['seq_len'] = seq_len
+    return sample
+
+class LMDBDataset(data.Dataset):
+    """
+    Nanopore DNA/RNA chunks dataset in LMDB format
+    """
+    def __init__(self,
+                 lmdb_path:str,
+                 transform:torchvision.transforms.transforms.Compose=None,
+                 ):
+        """
+        Generate a training dataset 
+
+        Parameters
+        ----------
+        lmdb_path : str
+            The path of the lmdb file.
+        transform : torchvision.transforms.transforms.Compose, optional
+            DESCRIPTION. The default is None.
+
+        Returns
+        -------
+        None.
+
+        """        
+        self.lmdb_env = lmdb.open(lmdb_path, readonly=True)
+        self.transform = transform
+    
+    @lru_cache(maxsize=1)
+    def __len__(self):
+        return self.lmdb_env.stat()['entries']
+
+    @lru_cache(maxsize=1000)
+    def __getitem__(self, idx):
+        with self.lmdb_env.begin(write = False) as txn:
+            sample_buffer = None
+            while sample_buffer is None:
+                sample_buffer = txn.get(str(idx).encode())
+                idx = (idx + 1) % self.__len__()
+            sample_dict = pickle.loads(sample_buffer)
+            sample = {}
+            sample['signal'] = np.frombuffer(sample_dict['signal'],dtype = np.float32)[None,:]
+            sample['signal_len'] = np.asarray([sample_dict['signal_len']],dtype = np.int64)
+            if 'seq' in sample_dict:
+                sample['seq'] = sample_dict['seq']
+                sample['seq_len'] = np.asarray([sample_dict['seq_len']], dtype = np.int64)
+            if self.transform:
+                sample = self.transform(sample)
+            return sample
 
 class Dataset(data.Dataset):
     """
@@ -121,18 +201,39 @@ def show_sample(sample:Dict, idx = 0):
     None.
 
     """
+    fig = plt.figure()
     signal = sample['signal']
     if len(signal.shape) > 1:
-        plt.plot(signal[idx,:])
+        plt.plot(signal[idx][0].numpy())
     else:
-        plt.plot(signal)
+        plt.plot(signal.numpy())
+    plt.show()
+
+def check_sample(sample:Dict):
+    seq_batch = sample['seq']
+    seq_len_batch = sample['seq_len']
+    signal_batch = sample['signal']
+    for i in range(seq_batch.shape[0]):
+        seq = seq_batch[i]
+        seq_len = seq_len_batch[i]
+        if not all(seq[:seq_len].numpy()!=0):
+            print("Sequence with invalid neucleotide found.")
+        signal = signal_batch[i]
+        #check if nan is in signal
+        if torch.any(torch.isnan(signal)):
+            print("Nan signal found.")
+        if torch.all(signal == 0):
+            print("Zero signal found.")
+        signal_len = sample['signal_len'][i]
+        #check if signal length is correct
+        # assert(signal_len >0)
 
 if __name__ == "__main__":
     print("Load dataset.")
-    folder = "/home/heavens/bridge_scratch/ELIGOS_dataset/IVT/control/kmers_guppy_4000_noise/"
+    folder = "/data/HEK293T_RNA004/extracted/"
     chunks = np.load(folder + "chunks.npy")
-    reference = np.load(folder + "seqs_re.npy")
-    ref_len = np.load(folder + "seq_re_lens.npy")
+    reference = np.load(folder + "seqs.npy")
+    ref_len = np.load(folder + "seq_lens.npy")
     plt.hist(ref_len[ref_len<chunks.shape[1]],bins = 200)
     alphabet_dict = {'A':1,'C':2,'G':3,'T':4,'M':5}
     print("Filt dataset.")
@@ -144,7 +245,40 @@ if __name__ == "__main__":
                       transform = transforms.Compose([NumIndex(alphabet_dict),ToTensor()]))
     loader = data.DataLoader(dataset,batch_size = 200,shuffle = True, num_workers = 4)
     for i_batch, sample_batch in enumerate(loader):
-        if i_batch == 10:
+        check_sample(sample_batch)
+        if i_batch == 1000:
+            print(sample_batch['signal'].shape)
+            print(sample_batch['signal_len'].shape)
+            print(sample_batch['seq'].shape)
+            print(sample_batch['seq_len'].shape)
+            print(sample_batch['signal'].dtype)
+            print(sample_batch['signal_len'].dtype)
+            print(sample_batch['seq'].dtype)
+            print(sample_batch['seq_len'].dtype)
             show_sample(sample_batch)
             break
-    
+    #%% Testing LMDB dataset
+    print("Load LMDB dataset.")
+    LMDB_folder = "/data/HEK293T_RNA004/extracted/"
+    alphabet_dict = {'A':1,'C':2,'G':3,'T':4,'M':5}
+    LMDB_dataset = LMDBDataset(LMDB_folder,
+                               transform = transforms.Compose([NumIndex(alphabet_dict),ToTensor()]))
+    dataloader = data.DataLoader(LMDB_dataset,batch_size = 200,shuffle = True, num_workers = 4,collate_fn = seq_collate_fn)
+    zero_signal = 0
+    for i_batch, sample_batch in enumerate(dataloader):
+        check_sample(sample_batch)
+        signal_len = sample_batch['signal_len']
+        zero_signal += torch.sum(signal_len == 0).item()
+        if i_batch == 100:
+            print(sample_batch['signal'].shape)
+            print(sample_batch['signal_len'].shape)
+            print(sample_batch['seq'].shape)
+            print(sample_batch['seq_len'].shape) 
+            print(sample_batch['signal'].dtype)
+            print(sample_batch['signal_len'].dtype)
+            print(sample_batch['seq'].dtype)
+            print(sample_batch['seq_len'].dtype)
+            show_sample(sample_batch)
+            break
+
+

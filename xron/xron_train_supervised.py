@@ -13,7 +13,7 @@ from torch.utils.tensorboard import SummaryWriter
 from torch.utils.data.dataloader import DataLoader
 from functools import partial
 from xron.xron_model import CRNN, CONFIG
-from xron.xron_input import Dataset, ToTensor, NumIndex
+from xron.xron_input import Dataset, LMDBDataset, ToTensor, NumIndex, seq_collate_fn
 from xron.xron_train_base import Trainer, DeviceDataLoader, load_config
 
 class SupervisedTrainer(Trainer):
@@ -158,6 +158,14 @@ class SupervisedTrainer(Trainer):
                                   beam_cut_threshold = self.config.CTC['beam_cut_threshold'])
         return loss,error    
 
+def load_lmdb(db_folder,alphabeta,max_n = None):
+    alphabet_dict = {x:i+1 for i,x in enumerate(alphabeta)}
+    transform = transforms.Compose([NumIndex(alphabet_dict),ToTensor()])
+    dataset = LMDBDataset(db_folder,transform = transform)
+    if max_n is not None:
+        dataset = torch.utils.data.Subset(dataset,range(max_n))
+    return dataset
+
 def load_data(chunk_f,
               seq_f,
               seqlen_f,
@@ -236,15 +244,24 @@ def main(args):
         config = config_old
     elif args.config:
         config = load_config(args.config)
-    print("Read chunks and sequence.")
-    dataset = load_data(args.chunks,
-                        args.seq,
-                        args.seq_len,
-                        chunklen_f = args.chunk_len, 
-                        mmap_mode = "r",
-                        alphabeta = config.CTC['alphabeta'])
+    if args.train_db:
+        print("Read LMDB database.")
+        dataset = load_lmdb(args.train_db,
+                            config.CTC['alphabeta'],)
+    else:
+        print("Read chunks and sequence.")
+        dataset = load_data(args.chunks,
+                            args.seq,
+                            args.seq_len,
+                            chunklen_f = args.chunk_len, 
+                            mmap_mode = "r",
+                            alphabeta = config.CTC['alphabeta'])
     eval_size = config.TRAIN['eval_size']
-    if args.eval_chunks:
+    if args.eval_db:
+        eval_ds = load_lmdb(args.eval_db,
+                            config.CTC['alphabeta'],
+                            max_n = eval_size*args.batch_size)
+    elif args.eval_chunks:
         print("Read evaluation chunks and sequence.")
         eval_ds = load_data(args.eval_chunks,
                             args.eval_seq,
@@ -255,8 +272,9 @@ def main(args):
                             max_n = eval_size*args.batch_size)
     else:
         dataset,eval_ds = torch.utils.data.random_split(dataset,[len(dataset) - eval_size, eval_size], generator=torch.Generator().manual_seed(42))
-    loader = data.DataLoader(dataset,batch_size = config.TRAIN['batch_size'],shuffle = True, num_workers = 2)
-    loader_eval = data.DataLoader(eval_ds,batch_size = config.TRAIN['batch_size'],shuffle = True, num_workers = 0)
+    collate_fn = seq_collate_fn if args.train_db else None
+    loader = data.DataLoader(dataset,batch_size = config.TRAIN['batch_size'],shuffle = True, num_workers = 2,collate_fn=collate_fn)
+    loader_eval = data.DataLoader(eval_ds,batch_size = config.TRAIN['batch_size'],shuffle = True, num_workers = 0,collate_fn=collate_fn)
     DEVICE = args.device
     loader = DeviceDataLoader(loader,device = DEVICE)
     loader_eval = DeviceDataLoader(loader_eval,device = DEVICE)
@@ -264,8 +282,12 @@ def main(args):
     net = CRNN(config)
     if args.logging:
         writer = SummaryWriter(comment = "LR={LR}_MODEL={MODEL}_ReTrain={ReTrain}_ReOL={ReOL}".format(LR=args.lr,MODEL=os.path.basename(args.model_folder),ReTrain=args.retrain,ReOL=args.retrain_on_last))
-        writer.add_text('chunks',args.chunks)
-        writer.add_text('seq',args.seq)
+        if args.chunks:
+            writer.add_text('chunks',args.chunks)
+            writer.add_text('seq',args.seq)
+        else:
+            writer.add_text('chunks',args.train_db)
+            writer.add_text('seq',args.train_db)
     else:
         writer = None
     t = SupervisedTrainer(loader,net,config,eval_dataloader = loader_eval,logger = writer)
@@ -305,13 +327,14 @@ def main(args):
     t.train(epoches,optim,COUNT_CYCLE,valid_check_cycle,model_f,scheduler = scheduler)
     
 def add_arguments(parser):
-    parser.add_argument('-i', '--chunks', required = True,
-                        help = "The .npy file contain chunks.")
     parser.add_argument('-o', '--model_folder', required = True,
                         help = "The folder to save folder at.")
-    parser.add_argument('--seq', required = True,
+    # old data format with separate chunk and sequences npy files.
+    parser.add_argument('-i', '--chunks', default = None,
+                        help = "The .npy file contain chunks.")
+    parser.add_argument('--seq', default = None,
                         help="The .npy file contain the sequence.")
-    parser.add_argument('--seq_len', required = True,
+    parser.add_argument('--seq_len', default = None,
                         help="The .npy file contain the sueqnece length.")
     parser.add_argument('--chunk_len', default = None,
                         help="The .npy file contain the chunk length, default is none, which assume full length of every signal.")
@@ -323,6 +346,13 @@ def add_arguments(parser):
                         help="The .npy file contain the sequence length for evaluation.")
     parser.add_argument('--eval_chunk_len',default = None,
                         help="The .npy file contain the chunk length for evaluation.")
+    
+    #new data format with a folder contains LMDB database
+    parser.add_argument('--train_db', default = None,
+                        help = "The LMDB database folder for training.")
+    parser.add_argument('--eval_db', default = None,
+                        help = "The LMDB database folder for evaluation.")
+
     parser.add_argument('--embedding', default = None,
                         help="The folder contains the embedding model, if retrain is enable this will have no effect.")
     parser.add_argument('--device', default = 'cuda',
@@ -360,6 +390,12 @@ def post_args(args):
     if args.retrain and args.embedding:
         args.embedding = None
         print("Embedding is being overrided by --load argument.")
+    if ((args.chunks is None) or (args.seq is None) or (args.seq_len is None)) and (args.train_db is None):
+        raise ValueError("Training data need to be provided through either --chunks,--seqs,--seq_len or --train_db.")
+    if ((args.chunks is not None) or (args.seq is not None) or (args.seq_len is not None)) and (args.train_db is not None):
+        raise ValueError("Training data can only be provided through either --chunks,--seqs,--seq_len or --train_db, not both.")
+    if ((args.eval_chunks is None) or (args.eval_seq is None) or (args.eval_seq_len is None)) and (args.eval_db is None):
+        print("Evaluation data is not provided, will auto split training data for evaluation.")
     os.makedirs(args.model_folder,exist_ok=True)
 
 if __name__ == "__main__":
