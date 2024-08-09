@@ -1,11 +1,15 @@
 # Distill training data from basecalled alignments
 # Immunoprecipitation result can be used ground truth training data
 import os
+import lmdb
+import pickle
 import pandas as pd
 import pysam
 import pod5 as p5
 import numpy as np
 import multiprocessing as mp
+import queue as Queue
+import time
 from tqdm import tqdm
 from functools import lru_cache
 from collections import defaultdict
@@ -86,7 +90,7 @@ class Balancer(object):
         return idxs
 
 class Distiller(object):
-    def __init__(self, config, filters = [], result_queue = None):
+    def __init__(self, config, result_queue, filters = [], ):
         self.config = config
         self.balancer = Balancer(config)
         self.reverse = True if "RNA" in config['kit'] else False
@@ -209,13 +213,19 @@ class Distiller(object):
                     seq = self.seq_mod(seq, list(range(ref_s,ref_e)), ref_id, self.immun)
 
                 #Filter the sequence
-                if self.filter({'seq':seq,'signal':sig_chunk}):
-                    #write to the out file
-                    if self.queue is not None:
-                        self.queue.put((sig_chunk,seq))
-                    else:
-                        seqs.append(seq)
-                        chunks.append(sig_chunk)
+                record = {"signal":np.pad(sig_chunk,(0,self.chunk_len-len(sig_chunk))),
+                        "seq":seq,
+                        "seq_len":len(seq),
+                        "signal_len":len(sig_chunk),
+                        "read_id":read_id,
+                        "ref_id":ref_id,
+                        "ref_start":ref_s,
+                        "ref_end":ref_e}
+                if self.filter(record):
+                    #check if queue is full
+                    while self.queue.full():
+                        pass
+                    self.queue.put(record)
                     self.balancer.add(ref_id, ref_s, ref_e)
                     i = seq_end
                     self.run_status["Processed"] += 1
@@ -226,15 +236,6 @@ class Distiller(object):
                 t.set_postfix(self.run_status)
             if len(chunks) > self.config['n_max']:
                 break
-        if self.queue is not None:
-            return
-        #write to the out file
-        chunk_lens = np.asarray([len(c) for c in chunks])
-        #pad chunk to chunk_len
-        chunks = np.array([np.pad(c,(0,self.chunk_len-len(c))) for c in chunks])
-        seq_lens = np.asarray([len(s) for s in seqs])
-        seqs = np.asarray(seqs)
-        return chunks, seqs, seq_lens, chunk_lens
 
 
     def extract_signal(self, read):
@@ -349,7 +350,7 @@ def bps_rate_filter(record,
     """Filter out sequence if the moving rate is greater than max_moving_rate"""
     min_rev_rate = sampling_rate / (max_bps_rate * bps_rate)
     max_rev_rate = sampling_rate / (min_bps_rate * bps_rate)
-    rev_rate = len(record['signal']) / len(record['seq'])
+    rev_rate = record['signal_len'] / len(record['seq'])
     if rev_rate > max_rev_rate or (rev_rate < min_rev_rate):
         return False
     return True
@@ -369,9 +370,9 @@ if __name__ == "__main__":
     index_f = f"{bam_f}.index"
     ref_f = f"{base}/Homo_sapiens.GRCh38.cdna.ncrna.fa"
     immun_f = f"{base}/m6A_site_m6Anet_DRACH_HEK293T_with_transcripts.csv"
-    out_f = f"{base}/extracted/"
+    out_f = f"{base}/extracted_lmdb/"
     os.makedirs(out_f, exist_ok =True)
-    runners = 8
+    runners = 7
     n_batch_per_runner = None #each batch 1000 files
 
     #optional Immunoprecipitation file
@@ -381,6 +382,7 @@ if __name__ == "__main__":
               "modification_code":'A+a',
               "n_max":1000000,
               "partition_over":100000,
+              'max_single_ref':2,
               }
     
     def worker(batch_ids,process_id,result_queue):
@@ -392,28 +394,77 @@ if __name__ == "__main__":
                             ref_f = ref_f,
                             immun_f = immun_f,
                             batch_ids = batch_ids)
-        chunks, seqs, seq_lens, chunk_lens = distiller.run(process_id)
-        np.save(f"{out_f}/chunks_{process_id}.npy",chunks)
-        np.save(f"{out_f}/seqs_{process_id}.npy",seqs)
-        np.save(f"{out_f}/seq_lens_{process_id}.npy",seq_lens)
-        np.save(f"{out_f}/chunk_lens_{process_id}.npy",chunk_lens)
-    
+        distiller.run(process_id)
+
+    def write_queue_to_lmdb(queue, lmdb_path, map_size=1e9, timeout=1, max_trail=5):
+        """
+        Write the contents of a queue to an LMDB dataset, waiting for new items if the queue is empty.
+
+        Parameters:
+        - queue: A queue containing dictionaries with keys "signal", "seq", "seq_len", and "signal_len".
+        - lmdb_path: Path to the LMDB file.
+        - map_size: Maximum size database may grow to; used to size the memory mapping. Defaults to 1GB.
+        - timeout: Time to wait for new items if the queue is empty (in seconds). Defaults to 1 seconds.
+        - max_trail: Maximum number of trails of attempting acquire data from queue before exiting. Defaults to 5 trails.
+        """
+        env = lmdb.open(lmdb_path, map_size=int(map_size))
+        idx,trails = 0,0
+        txn = env.begin(write=True)
+        while True:
+            try:
+                item = queue.get(timeout=timeout)
+                if not all(key in item for key in ["signal", "seq", "seq_len", "signal_len"]):
+                    raise ValueError("Dictionary missing required keys: 'signal', 'seq', 'seq_len', 'signal_len'")
+
+                # Serialize the item
+                serialized_item = pickle.dumps(item)
+                # write to lmdb
+                success = False
+                while not success:
+                    try:
+                        txn.put(str(idx).encode(), serialized_item)
+                        success = True
+                        idx += 1
+                    except lmdb.MapFullError:
+                        txn.abort()
+                        # double the map_size
+                        curr_limit = env.info()['map_size']
+                        new_limit = curr_limit*2
+                        env.set_mapsize(new_limit) # double it
+                        txn = env.begin(write=True)
+                if idx % 1000 == 0:
+                    txn.commit()
+                    txn = env.begin(write=True)
+                trails = 0
+            except Queue.Empty:
+                if trails > max_trail:
+                    break
+                time.sleep(timeout)  # Wait for a while before checking again
+                trails += 1
+        txn.commit()
+        env.close()
     
     file = p5.Reader(pod5_f)
     batches = list(range(file.batch_count))
     start_idx = 0
     processes_idx = 0
     processes = []
+    result_queue = mp.Queue()
     if n_batch_per_runner is None:
         n_batch_per_runner = len(batches) // runners
     while start_idx < len(batches):
         batch_ids = batches[start_idx:start_idx+n_batch_per_runner]
         start_idx += len(batch_ids)
-        p = mp.Process(target = worker, args = (batch_ids,processes_idx,None))
+        p = mp.Process(target = worker, args = (batch_ids,processes_idx,result_queue))
         processes_idx += 1
         p.start()
         processes.append(p)
 
+    #Start the queue consumer, write the data to the file
+    lmdb_out = f"{out_f}/"
+    p = mp.Process(target = write_queue_to_lmdb, args = (result_queue, lmdb_out))
+    p.start()
+    processes.append(p)
     for p in processes:
         p.join()
     
