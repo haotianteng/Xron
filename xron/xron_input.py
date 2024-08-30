@@ -67,7 +67,10 @@ class LMDBDataset(data.Dataset):
         None.
 
         """        
-        self.lmdb_env = lmdb.open(lmdb_path, readonly=True)
+        self.lmdb_env = lmdb.open(lmdb_path, 
+                                  readonly=True,
+                                  lock = False,
+                                  )
         self.transform = transform
     
     @lru_cache(maxsize=1)
@@ -263,22 +266,31 @@ if __name__ == "__main__":
     alphabet_dict = {'A':1,'C':2,'G':3,'T':4,'M':5}
     LMDB_dataset = LMDBDataset(LMDB_folder,
                                transform = transforms.Compose([NumIndex(alphabet_dict),ToTensor()]))
-    dataloader = data.DataLoader(LMDB_dataset,batch_size = 200,shuffle = True, num_workers = 4,collate_fn = seq_collate_fn)
+    eval_size = 1000
+    dataset,eval_ds = torch.utils.data.random_split(LMDB_dataset,[len(LMDB_dataset) - eval_size, eval_size], generator=torch.Generator().manual_seed(42))
+    dataloader = data.DataLoader(dataset,batch_size = 200,shuffle = True, num_workers = 4,collate_fn = seq_collate_fn)
+    eval_dataloader = data.DataLoader(eval_ds,batch_size = 200,shuffle = True, num_workers = 0, collate_fn=seq_collate_fn)
     zero_signal = 0
-    for i_batch, sample_batch in enumerate(dataloader):
-        check_sample(sample_batch)
-        signal_len = sample_batch['signal_len']
-        zero_signal += torch.sum(signal_len == 0).item()
-        if i_batch == 100:
-            print(sample_batch['signal'].shape)
-            print(sample_batch['signal_len'].shape)
-            print(sample_batch['seq'].shape)
-            print(sample_batch['seq_len'].shape) 
-            print(sample_batch['signal'].dtype)
-            print(sample_batch['signal_len'].dtype)
-            print(sample_batch['seq'].dtype)
-            print(sample_batch['seq_len'].dtype)
-            show_sample(sample_batch)
-            break
-
+    n_epoches = 5
+    from tqdm import tqdm
+    for epoch_i in range(n_epoches):
+        for i_batch, sample_batch in enumerate(tqdm(dataloader)):
+            if i_batch> 100:
+                break
+            # check_sample(sample_batch)
+            # signal_len = sample_batch['signal_len']
+            # zero_signal += torch.sum(signal_len == 0).item()
+            # if i_batch == 100:
+            #     print(sample_batch['signal'].shape)
+            #     print(sample_batch['signal_len'].shape)
+            #     print(sample_batch['seq'].shape)
+            #     print(sample_batch['seq_len'].shape) 
+            #     print(sample_batch['signal'].dtype)
+            #     print(sample_batch['signal_len'].dtype)
+            #     print(sample_batch['seq'].dtype)
+            #     print(sample_batch['seq_len'].dtype)
+            #     show_sample(sample_batch)
+            #     break
+        for i_batch, sample_batch in enumerate(tqdm(eval_dataloader)):
+            pass
 
