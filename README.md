@@ -14,6 +14,11 @@ m6A-aware RNA basecall one-liner:
 xron call -i <input_fast5_folder> -o <output_folder> -m models/ENEYFT --boostnano
 ```
 
+A basecaller for SQK-RNA004 nanopore kit is provided now! To use it:
+```
+xron call -i <input_pod5_folder> -o <output_folder> -m models/RNA004
+```
+
 ---
 ## Table of contents
 
