@@ -40,7 +40,7 @@ xron call -i <input_pod5_folder> -o <output_folder> -m models/RNA004
 - [Training](#training)
   
 ## Install
-For either installation method, recommend to create a vritual environment first using conda or venv, take conda for example
+For either installation method, recommend to create a vritual environment first using conda or venv, take conda for example, there is a known compiling issue for installation with Python > 3.8, so pleasd installed with Python 3.8.
 ```bash
 conda create --name YOUR_VIRTUAL_ENVIRONMENT python=3.8
 conda activate YOUR_VIRTUAL_ENVIRONMENT
